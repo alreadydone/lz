@@ -23,7 +23,12 @@
 #include <vector>
 #include <future>
 
+#ifdef USE_OPENCL
 #include "OpenCL.h"
+#else
+#include "CuDNN.h"
+#endif
+
 #include "ThreadPool.h"
 
 class OpenCLScheduler {
@@ -48,7 +53,11 @@ private:
     };
 
     std::vector<std::unique_ptr<OpenCL_Network>> m_networks;
+#ifdef USE_OPENCL
     std::vector<std::unique_ptr<OpenCL>> m_opencl;
+#else
+    std::vector<std::unique_ptr<CuDNN>> m_opencl;
+#endif
     Utils::ThreadPool m_threadpool;
 };
 

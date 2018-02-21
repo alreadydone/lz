@@ -72,6 +72,13 @@ private:
     static void process_bn_var(std::vector<float>& weights,
                                const float epsilon=1e-5f);
 
+
+    static void bn_stddivs_to_conv(std::vector<float>& w,
+                                 std::vector<float>& biases,
+                                 std::vector<float>& bn_stddivs,
+                                 std::vector<float>& bn_means,
+                                 const int outputs, const int channels);
+
     static std::vector<float> winograd_transform_f(const std::vector<float>& f,
         const int outputs, const int channels);
     static std::vector<float> zeropad_U(const std::vector<float>& U,
@@ -81,11 +88,13 @@ private:
                                       std::vector<float>& V,
                                       const int C);
     static void winograd_transform_out(const std::vector<float>& M,
+                                       const std::vector<float>& biases,
                                        std::vector<float>& Y,
                                        const int K);
     static void winograd_convolve3(const int outputs,
                                    const std::vector<float>& input,
                                    const std::vector<float>& U,
+                                   const std::vector<float>& biases,
                                    std::vector<float>& V,
                                    std::vector<float>& M,
                                    std::vector<float>& output);

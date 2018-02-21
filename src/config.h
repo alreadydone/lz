@@ -60,7 +60,14 @@
  * OpenCL drivers - the BLAS version is much faster for those.
  */
 #ifndef FEATURE_USE_CPU_ONLY
-#define USE_OPENCL
+//#define USE_OPENCL
+#define USE_CUDNN
+#endif
+
+#define USE_GPU (USE_OPENCL | USE_CUDNN)
+
+#if (defined(USE_OPENCL) && defined(USE_CUDNN))
+#error "Both OpenCL and CuDNN can't be enabled at the same time"
 #endif
 /*
  * USE_TUNER: Expose some extra command line parameters that allow tuning the

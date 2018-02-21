@@ -17,10 +17,11 @@
 */
 #include "config.h"
 
-#ifdef USE_OPENCL
+#ifdef USE_GPU
 #include "GTP.h"
 #include "Random.h"
 #include "OpenCLScheduler.h"
+
 
 thread_local auto current_thread_gpu_num = size_t{0};
 OpenCLScheduler opencl;
@@ -30,7 +31,11 @@ void OpenCLScheduler::initialize(const int channels) {
     if (!cfg_gpus.empty()) {
         auto silent{false};
         for(auto gpu : cfg_gpus) {
+#if defined(USE_CUDNN)
+            auto opencl = std::make_unique<CuDNN>();
+#else
             auto opencl = std::make_unique<OpenCL>();
+#endif
             auto net = std::make_unique<OpenCL_Network>(*opencl);
             opencl->initialize(channels, {gpu}, silent);
             m_opencl.push_back(std::move(opencl));
@@ -56,7 +61,11 @@ void OpenCLScheduler::initialize(const int channels) {
             }
         }
     } else {
+#if defined(USE_CUDNN)
+		auto opencl = std::make_unique<CuDNN>();
+#else
         auto opencl = std::make_unique<OpenCL>();
+#endif
         auto net = std::make_unique<OpenCL_Network>(*opencl);
         opencl->initialize(channels, {});
 

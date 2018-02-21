@@ -82,7 +82,7 @@ static void parse_commandline(int argc, char *argv[]) {
         ("logfile,l", po::value<std::string>(), "File to log input/output to.")
         ("quiet,q", "Disable all diagnostic output.")
         ("noponder", "Disable thinking on opponent's time.")
-#ifdef USE_OPENCL
+#ifdef USE_GPU
         ("gpu",  po::value<std::vector<int> >(),
                 "ID of the OpenCL device(s) to use (disables autodetection).")
         ("full-tuner", "Try harder to find an optimal OpenCL tuning.")
@@ -244,7 +244,7 @@ static void parse_commandline(int argc, char *argv[]) {
         }
     }
 
-#ifdef USE_OPENCL
+#ifdef USE_GPU
     if (vm.count("gpu")) {
         cfg_gpus = vm["gpu"].as<std::vector<int> >();
     }

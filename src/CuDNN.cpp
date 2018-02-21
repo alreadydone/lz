@@ -300,16 +300,29 @@ size_t CuDNN::convolve_init(int channels, int outputs, int kernel_size,
 											   /*mode=*/CUDNN_CROSS_CORRELATION,
 											   /*computeType=*/CUDNN_DATA_FLOAT));
 
+	int returnedAlgoCount;
+
+	cudnnConvolutionFwdAlgoPerf_t perf[7];
+
 	checkCUDNN(
-		cudnnGetConvolutionForwardAlgorithm(m_handle,
+		cudnnFindConvolutionForwardAlgorithm(m_handle,
 											conv_desc.input_descriptor,
 											conv_desc.kernel_descriptor,
 											conv_desc.convolution_descriptor,
 											conv_desc.output_descriptor,
-											CUDNN_CONVOLUTION_FWD_PREFER_FASTEST,
-											/*memoryLimitInBytes=*/0,
-											&conv_desc.convolution_algorithm));
+											7,
+											&returnedAlgoCount,
+											&perf[0]));
 
+	conv_desc.convolution_algorithm = perf[0].algo;
+
+	//myprintf("Layer %d %d %d\n", channels, outputs, kernel_size);
+	//for (auto i = 0; i < returnedAlgoCount; i++) {
+	//	myprintf("Algo %d\n", perf[i].algo);
+	//	myprintf("Time %f\n", perf[i].time);
+	//	myprintf("Memory %zu\n", perf[i].memory);
+	//	myprintf("\n");
+	//}
 
 	size_t workspace_bytes = 0;
 	checkCUDNN(cudnnGetConvolutionForwardWorkspaceSize(m_handle,

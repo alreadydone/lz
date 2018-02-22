@@ -41,7 +41,7 @@
 #ifdef USE_OPENBLAS
 #include <cblas.h>
 #endif
-#ifdef USE_OPENCL
+#ifdef USE_GPU
 #include "OpenCLScheduler.h"
 #include "UCTNode.h"
 #endif
@@ -160,6 +160,27 @@ std::vector<float> Network::winograd_transform_f(const std::vector<float>& f,
     }
 
     return U;
+}
+
+void Network::bn_stddivs_to_conv(std::vector<float>& w,
+                                 std::vector<float>& biases,
+                                 std::vector<float>& bn_stddivs,
+                                 std::vector<float>& bn_means,
+                                 const int outputs, const int channels) {
+
+    for(auto o = 0; o < outputs; o++) {
+        for(auto c = 0; c < channels; c++) {
+            for(auto i = 0; i < 9; i++) {
+                w[o*channels*9 + c*9 + i] *= bn_stddivs[o];
+            }
+        }
+        bn_means[o] *= bn_stddivs[o];
+        bn_stddivs[o] = 1.0f;
+
+        // Move means to convolution biases
+        biases[o] = -bn_means[o];
+        bn_means[o] = 0.0f;
+    }
 }
 
 std::vector<float> Network::zeropad_U(const std::vector<float>& U,
@@ -333,22 +354,6 @@ void Network::initialize(void) {
         exit(EXIT_FAILURE);
     }
 
-    auto weight_index = size_t{0};
-    // Input convolution
-    // Winograd transform convolution weights
-    conv_weights[weight_index] =
-        winograd_transform_f(conv_weights[weight_index],
-                             channels, INPUT_CHANNELS);
-    weight_index++;
-
-    // Residual block convolutions
-    for (auto i = size_t{0}; i < residual_blocks * 2; i++) {
-		conv_weights[weight_index] =
-            winograd_transform_f(conv_weights[weight_index],
-                                 channels, channels);
-        weight_index++;
-    }
-
     // Biases are not calculated and are typically zero but some networks might
     // still have non-zero biases.
     // Move biases to batchnorm means to make the output match without having
@@ -370,18 +375,36 @@ void Network::initialize(void) {
         conv_pol_b[i] = 0.0f;
     }
 
+    for (auto i = size_t{0}; i < conv_biases.size(); i++) {
+        // Multiply batchnorm scaling factors into convolution weights
+        // and move batchnorm means to convolution biases.
+        bn_stddivs_to_conv(conv_weights[i],
+                            conv_biases[i],
+                            batchnorm_stddivs[i],
+                            batchnorm_means[i],
+                            channels,
+                            i == 0 ? INPUT_CHANNELS : channels);
+
+        // Winograd transform convolution weights
 #ifdef USE_OPENCL
+        conv_weights[i] =
+            winograd_transform_f(conv_weights[i], channels,
+                                 i == 0 ? INPUT_CHANNELS : channels);
+#endif
+    }
+
+#ifdef USE_GPU
     myprintf("Initializing OpenCL.\n");
     opencl.initialize(channels);
 
     for(auto & opencl_net : opencl.get_networks()) {
+        auto weight_index = 0;
+#ifdef USE_OPENCL
         auto tuners = opencl_net->getOpenCL().get_sgemm_tuners();
 
         auto mwg = tuners[0];
         auto kwg = tuners[2];
         auto vwm = tuners[3];
-
-        weight_index = 0;
 
         size_t m_ceil = ceilMultiple(ceilMultiple(channels, mwg), vwm);
         size_t k_ceil = ceilMultiple(ceilMultiple(INPUT_CHANNELS, kwg), vwm);
@@ -389,27 +412,33 @@ void Network::initialize(void) {
         auto Upad = zeropad_U(conv_weights[weight_index],
                               channels, INPUT_CHANNELS,
                               m_ceil, k_ceil);
+#else
+		auto Upad = conv_weights[weight_index];
+#endif
 
         // Winograd filter transformation changes filter size to 4x4
         opencl_net->push_input_convolution(WINOGRAD_ALPHA, INPUT_CHANNELS, channels,
-                Upad, batchnorm_means[weight_index], batchnorm_stddivs[weight_index]);
+                Upad, conv_biases[weight_index]);
         weight_index++;
 
         // residual blocks
         for (auto i = size_t{0}; i < residual_blocks; i++) {
+#ifdef USE_OPENCL
             auto Upad1 = zeropad_U(conv_weights[weight_index],
                                    channels, channels,
                                    m_ceil, m_ceil);
             auto Upad2 = zeropad_U(conv_weights[weight_index + 1],
                                    channels, channels,
                                    m_ceil, m_ceil);
+#else
+			auto Upad1 = conv_weights[weight_index];
+			auto Upad2 = conv_weights[weight_index + 1];
+#endif
             opencl_net->push_residual(WINOGRAD_ALPHA, channels, channels,
                                       Upad1,
-                                      batchnorm_means[weight_index],
-                                      batchnorm_stddivs[weight_index],
+                                      conv_biases[weight_index],
                                       Upad2,
-                                      batchnorm_means[weight_index + 1],
-                                      batchnorm_stddivs[weight_index + 1]);
+                                      conv_biases[weight_index + 1]);
             weight_index += 2;
         }
 
@@ -544,6 +573,7 @@ void Network::winograd_sgemm(const std::vector<float>& U,
 }
 
 void Network::winograd_transform_out(const std::vector<float>& M,
+                                     const std::vector<float>& biases,
                                      std::vector<float>& Y,
                                      const int K) {
     constexpr auto W = 19;
@@ -593,14 +623,16 @@ void Network::winograd_transform_out(const std::vector<float>& M,
                     temp_m[2*4 + 1] + temp_m[2*4 + 2] + temp_m[2*4 + 3] -
                     temp_m[3*4 + 1] + temp_m[3*4 + 2] + temp_m[3*4 + 3];
 
-                Y[k*(H*W) + (y)*W + (x)] = o11;
+                auto bias = biases[k];
+
+                Y[k*(H*W) + (y)*W + (x)] = o11 + bias;
                 if (x + 1 < W) {
-                    Y[k*(H*W) + (y)*W + (x+1)] = o12;
+                    Y[k*(H*W) + (y)*W + (x+1)] = o12 + bias;
                 }
                 if (y + 1 < H) {
-                    Y[k*(H*W) + (y+1)*W + (x)] = o21;
+                    Y[k*(H*W) + (y+1)*W + (x)] = o21 + bias;
                     if (x + 1 < W) {
-                        Y[k*(H*W) + (y+1)*W + (x+1)] = o22;
+                        Y[k*(H*W) + (y+1)*W + (x+1)] = o22 + bias;
                     }
                 }
             }
@@ -611,6 +643,7 @@ void Network::winograd_transform_out(const std::vector<float>& M,
 void Network::winograd_convolve3(const int outputs,
                                  const std::vector<float>& input,
                                  const std::vector<float>& U,
+                                 const std::vector<float>& biases,
                                  std::vector<float>& V,
                                  std::vector<float>& M,
                                  std::vector<float>& output) {
@@ -620,7 +653,7 @@ void Network::winograd_convolve3(const int outputs,
 
     winograd_transform_in(input, V, input_channels);
     winograd_sgemm(U, V, M, input_channels, outputs);
-    winograd_transform_out(M, output, outputs);
+    winograd_transform_out(M, biases, output, outputs);
 }
 
 template<unsigned int filter_size>
@@ -728,6 +761,25 @@ void batchnorm(size_t channels,
     }
 }
 
+template <size_t spatial_size>
+void relu(size_t channels,
+          std::vector<float>& data,
+          const float* eltwise = nullptr)
+{
+    auto lambda_ReLU = [](float val) { return (val > 0.0f) ?
+                                       val : 0.0f; };
+
+    for (auto i = size_t{0}; i < spatial_size * channels; ++i) {
+        if (eltwise == nullptr) {
+            // ReLU only
+            data[i] = lambda_ReLU(data[i]);
+        } else {
+            // ReLU + Residual add
+            data[i] = lambda_ReLU(data[i] + eltwise[i]);
+        }
+    }
+}
+
 void Network::forward_cpu(std::vector<float>& input,
                           std::vector<float>& output_pol,
                           std::vector<float>& output_val) {
@@ -748,10 +800,9 @@ void Network::forward_cpu(std::vector<float>& input,
     auto V = std::vector<float>(WINOGRAD_TILE * input_channels * tiles);
     auto M = std::vector<float>(WINOGRAD_TILE * output_channels * tiles);
 
-    winograd_convolve3(output_channels, input, conv_weights[0], V, M, conv_out);
-    batchnorm<361>(output_channels, conv_out,
-                   batchnorm_means[0].data(),
-                   batchnorm_stddivs[0].data());
+    winograd_convolve3(output_channels, input, conv_weights[0], conv_biases[0],
+            V, M, conv_out);
+    relu<361>(output_channels, conv_out);
 
     // Residual tower
     auto conv_in = std::vector<float>(output_channels * width * height);
@@ -761,19 +812,14 @@ void Network::forward_cpu(std::vector<float>& input,
         std::swap(conv_out, conv_in);
         std::copy(begin(conv_in), end(conv_in), begin(res));
         winograd_convolve3(output_channels, conv_in,
-	                       conv_weights[i], V, M, conv_out);
-        batchnorm<361>(output_channels, conv_out,
-                       batchnorm_means[i].data(),
-                       batchnorm_stddivs[i].data());
+	                       conv_weights[i], conv_biases[i], V, M, conv_out);
+        relu<361>(output_channels, conv_out);
 
         output_channels = conv_biases[i + 1].size();
         std::swap(conv_out, conv_in);
         winograd_convolve3(output_channels, conv_in,
-			               conv_weights[i + 1], V, M, conv_out);
-        batchnorm<361>(output_channels, conv_out,
-                       batchnorm_means[i + 1].data(),
-                       batchnorm_stddivs[i + 1].data(),
-                       res.data());
+			               conv_weights[i + 1], conv_biases[i + 1], V, M, conv_out);
+        relu<361>(output_channels, conv_out, res.data());
     }
     convolve<1>(OUTPUTS_POLICY, conv_out, conv_pol_w, conv_pol_b, output_pol);
     convolve<1>(OUTPUTS_VALUE, conv_out, conv_val_w, conv_val_b, output_val);
@@ -901,9 +947,9 @@ Network::Netresult Network::get_scored_moves_internal(
             }
         }
     }
-#ifdef USE_OPENCL
+#ifdef USE_GPU
     opencl.forward(input_data, policy_data, value_data);
-#elif defined(USE_BLAS) && !defined(USE_OPENCL)
+#elif defined(USE_BLAS) && !defined(USE_GPU)
     forward_cpu(input_data, policy_data, value_data);
 #endif
 #ifdef USE_OPENCL_SELFCHECK

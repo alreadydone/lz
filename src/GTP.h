@@ -40,7 +40,7 @@ extern int cfg_noise;
 extern int cfg_random_cnt;
 extern std::uint64_t cfg_rng_seed;
 extern bool cfg_dumbpass;
-#ifdef USE_OPENCL
+#ifdef USE_GPU
 extern std::vector<int> cfg_gpus;
 extern bool cfg_sgemm_exhaustive;
 extern bool cfg_tune_only;

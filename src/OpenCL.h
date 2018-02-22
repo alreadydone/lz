@@ -60,8 +60,8 @@ private:
     cl::Kernel m_merge_kernel;
     cl::Kernel m_in_transform_kernel;
     cl::Kernel m_sgemm_kernel;
-    cl::Kernel m_out_transform_bn_kernel;
-    cl::Kernel m_out_transform_bn_in_kernel;
+    cl::Kernel m_out_transform_relu_kernel;
+    cl::Kernel m_out_transform_relu_in_kernel;
     cl::Buffer m_inBuffer;
     cl::Buffer m_inBuffer2;
     cl::Buffer m_VBuffer;
@@ -82,12 +82,10 @@ public:
                        unsigned int channels,
                        unsigned int outputs,
                        const std::vector<float>& weights,
-                       const std::vector<float>& means,
-                       const std::vector<float>& variances) {
+                       const std::vector<float>& biases) {
         size_t layer = get_layer_count();
         push_weights(layer, weights);
-        push_weights(layer, means);
-        push_weights(layer, variances);
+        push_weights(layer, biases);
         m_layers[layer].is_input_convolution = true;
         m_layers[layer].outputs = outputs;
         m_layers[layer].filter_size = filter_size;
@@ -98,18 +96,14 @@ public:
                        unsigned int channels,
                        unsigned int outputs,
                        const std::vector<float>& weights_1,
-                       const std::vector<float>& means_1,
-                       const std::vector<float>& variances_1,
+                       const std::vector<float>& biases_1,
                        const std::vector<float>& weights_2,
-                       const std::vector<float>& means_2,
-                       const std::vector<float>& variances_2) {
+                       const std::vector<float>& biases_2) {
         size_t layer = get_layer_count();
         push_weights(layer, weights_1);
-        push_weights(layer, means_1);
-        push_weights(layer, variances_1);
+        push_weights(layer, biases_1);
         push_weights(layer, weights_2);
-        push_weights(layer, means_2);
-        push_weights(layer, variances_2);
+        push_weights(layer, biases_2);
         m_layers[layer].is_residual_block = true;
         m_layers[layer].outputs = outputs;
         m_layers[layer].filter_size = filter_size;

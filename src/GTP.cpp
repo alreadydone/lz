@@ -57,7 +57,7 @@ int cfg_noise;
 int cfg_random_cnt;
 std::uint64_t cfg_rng_seed;
 bool cfg_dumbpass;
-#ifdef USE_OPENCL
+#ifdef USE_GPU
 std::vector<int> cfg_gpus;
 bool cfg_sgemm_exhaustive;
 bool cfg_tune_only;
@@ -79,7 +79,7 @@ void GTP::setup_default_parameters() {
     cfg_max_visits = std::numeric_limits<decltype(cfg_max_visits)>::max();
     cfg_timemanage = TimeManagement::AUTO;
     cfg_lagbuffer_cs = 100;
-#ifdef USE_OPENCL
+#ifdef USE_GPU
     cfg_gpus = { };
     cfg_sgemm_exhaustive = false;
     cfg_tune_only = false;

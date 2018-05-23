@@ -32,9 +32,11 @@
 #include "GameState.h"
 #include "UCTNode.h"
 
+extern int cfg_backup_type;
 
 class SearchResult {
 public:
+    int backup_type;
     SearchResult() = default;
     bool valid() const { return m_valid;  }
     float eval() const { return m_eval;  }
@@ -52,7 +54,7 @@ public:
     }
 private:
     explicit SearchResult(float eval)
-        : m_valid(true), m_eval(eval) {}
+        : m_valid(true), m_eval(eval), backup_type(cfg_backup_type) {}
     bool m_valid{false};
     float m_eval{0.0f};
 };
@@ -98,7 +100,7 @@ public:
     void ponder();
     bool is_running() const;
     void increment_playouts();
-    SearchResult play_simulation(GameState& currstate, UCTNode* const node);
+    SearchResult play_simulation(GameState& currstate, UCTNode* const node, float backup_pct);
 
 private:
     float get_min_psa_ratio() const;

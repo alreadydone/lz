@@ -272,7 +272,12 @@ UCTNode* UCTNode::uct_select_child(int color, bool is_root) {
     
     auto pure_eval = get_pure_eval(color); 
     if (!is_root || !cfg_noise) {
-        fpu_reduction = cfg_fpu_reduction * std::sqrt(total_visited_policy) * pure_eval / 0.5;
+        fpu_reduction = cfg_fpu_reduction * std::sqrt(total_visited_policy);
+        if (cfg_puct_factor == 2) {
+            fpu_reduction *= pure_eval * (1 - pure_eval) / 0.25;
+        } else if (cfg_puct_factor == 1) {
+            fpu_reduction *= pure_eval / 0.5;
+        }
     }
     // Estimated eval for unknown nodes = current parent winrate - reduction
     auto fpu_eval = pure_eval - fpu_reduction;
@@ -291,7 +296,12 @@ UCTNode* UCTNode::uct_select_child(int color, bool is_root) {
         }
         auto psa = child.get_score();
         auto denom = 1.0 + child.get_visits();
-        auto puct = cfg_puct * psa * (numerator / denom) * pure_eval / 0.5;
+        auto puct = cfg_puct * psa * (numerator / denom);
+        if (cfg_puct_factor == 2) {
+            puct *= pure_eval * (1 - pure_eval) / 0.25;
+        } else if (cfg_puct_factor == 1) {
+            puct *= pure_eval / 0.5;
+        }
         auto value = winrate + puct;
         assert(value > std::numeric_limits<double>::lowest());
 

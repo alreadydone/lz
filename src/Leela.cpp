@@ -77,6 +77,19 @@ static void parse_commandline(int argc, char *argv[]) {
         ("noponder", "Disable thinking on opponent's time.")
         ("benchmark", "Test network and exit. Default args:\n-v3200 --noponder "
                       "-m0 -t1 -s1.")
+        
+	("puct-factor", po::value<int>()->default_value(cfg_puct_factor),
+	              "0: original (=1), 1: linear (=winrate*2), 2: quadratic (=winrate(1-winrate)*4, default).")
+	("backup-pct", po::value<float>()->default_value(cfg_backup_pct),
+		      "Update (backup) Q-values (winrates) of white's moves that are ancestors of the leaf node "
+		      "with a probability determined by winrate at root node and this parameter.\n"
+		      "At most 100, defaulted to 90.\n"
+		      "The lower the value, the weaker you assume white to be.")
+	("backup-type", po::value<int>()->default_value(cfg_backup_type),
+		      "0: throw a dice to go up a generation (default),\n"
+	              "1: always update, 2: never update,\n"
+	              "3: throw dice once for each simulation\n"
+	              "4: throw dice once for each ancestor.")
         ;
 #ifdef USE_OPENCL
     po::options_description gpu_desc("GPU options");
@@ -167,6 +180,19 @@ static void parse_commandline(int argc, char *argv[]) {
         cfg_quiet = true;  // Set this early to avoid unnecessary output.
     }
 
+    if (vm.count("puct-factor")) {
+	    cfg_puct_factor = vm["puct-factor"].as<int>();
+    }
+    if (vm.count("backup-pct")) {
+	    cfg_backup_pct = vm["backup-pct"].as<float>();
+	    if (cfg_backup_pct > 100.0) {
+		    cfg_backup_pct = 90.0;
+		    myprintf("Invalid backup percentage. Falling back to 90.0.\n");
+	    }
+    }
+    if (vm.count("backup-type")) {
+	    cfg_backup_type = vm["backup-type"].as<int>();
+    }
 #ifdef USE_TUNER
     if (vm.count("puct")) {
         cfg_puct = vm["puct"].as<float>();

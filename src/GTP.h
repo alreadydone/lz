@@ -48,6 +48,8 @@ extern std::vector<int> cfg_gpus;
 extern bool cfg_sgemm_exhaustive;
 extern bool cfg_tune_only;
 #endif
+extern int cfg_puct_factor;
+extern float cfg_backup_pct;
 extern float cfg_puct;
 extern float cfg_softmax_temp;
 extern float cfg_fpu_reduction;

@@ -65,6 +65,9 @@ std::vector<int> cfg_gpus;
 bool cfg_sgemm_exhaustive;
 bool cfg_tune_only;
 #endif
+int cfg_puct_factor;
+float cfg_backup_pct;
+int cfg_backup_type;
 float cfg_puct;
 float cfg_softmax_temp;
 float cfg_fpu_reduction;
@@ -95,6 +98,9 @@ void GTP::setup_default_parameters() {
     cfg_sgemm_exhaustive = false;
     cfg_tune_only = false;
 #endif
+    cfg_puct_factor = 2;
+	cfg_backup_pct = 90.0;
+	cfg_backup_type = 0;
     cfg_puct = 0.8f;
     cfg_softmax_temp = 1.0f;
     cfg_fpu_reduction = 0.25f;

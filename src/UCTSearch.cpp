@@ -24,6 +24,7 @@
 #include <cstddef>
 #include <limits>
 #include <memory>
+#include <random>
 #include <type_traits>
 
 #include "FastBoard.h"
@@ -31,6 +32,7 @@
 #include "FullBoard.h"
 #include "GTP.h"
 #include "GameState.h"
+#include "Random.h"
 #include "TimeControl.h"
 #include "Timing.h"
 #include "Training.h"
@@ -157,8 +159,18 @@ float UCTSearch::get_min_psa_ratio() const {
     return 0.0f;
 }
 
+float calc_backup_pct (float blackeval) {
+	// dynamically adjust backup_pct according to root winrate
+	if (blackeval > 0.5) {
+		return (100.0 - cfg_backup_pct) * 4.0 * blackeval * (1 - blackeval) + cfg_backup_pct;
+	} else {
+		return 100.0;
+	}
+}
+
 SearchResult UCTSearch::play_simulation(GameState & currstate,
-                                        UCTNode* const node) {
+                                        UCTNode* const node,
+                                        float backup_pct) {
     const auto color = currstate.get_to_move();
     auto result = SearchResult{};
 
@@ -188,12 +200,27 @@ SearchResult UCTSearch::play_simulation(GameState & currstate,
         if (move != FastBoard::PASS && currstate.superko()) {
             next->invalidate();
         } else {
-            result = play_simulation(currstate, next);
+	    if (backup_pct > 100.0) {
+		    backup_pct = calc_backup_pct(node->get_pure_eval(FastBoard::BLACK));
+	    }
+            result = play_simulation(currstate, next, backup_pct);
         }
     }
 
     if (result.valid()) {
-        node->update(result.eval());
+		if (color == FastBoard::BLACK || result.backup_type == 1 || node->get_visits() == 0) {
+			node->update(result.eval());
+		}
+		else {
+			if (std::uniform_real_distribution<double>{ 0.0, 100.0 }(Random::get_Rng()) <= backup_pct && result.backup_type != 2) {
+				node->update(result.eval());
+				if (result.backup_type == 3) {
+					result.backup_type = 1;
+				}
+			} else if (result.backup_type ==0 || result.backup_type == 3) {
+				result.backup_type = 2;
+			}
+		}
     }
     node->virtual_loss_undo();
 
@@ -586,7 +613,7 @@ bool UCTSearch::stop_thinking(int elapsed_centis, int time_for_move) const {
 void UCTWorker::operator()() {
     do {
         auto currstate = std::make_unique<GameState>(m_rootstate);
-        auto result = m_search->play_simulation(*currstate, m_root);
+        auto result = m_search->play_simulation(*currstate, m_root, 200.0);
         if (result.valid()) {
             m_search->increment_playouts();
         }
@@ -631,7 +658,7 @@ int UCTSearch::think(int color, passflag_t passflag) {
     do {
         auto currstate = std::make_unique<GameState>(m_rootstate);
 
-        auto result = play_simulation(*currstate, m_root.get());
+        auto result = play_simulation(*currstate, m_root.get(), 200.0);
         if (result.valid()) {
             increment_playouts();
         }
@@ -707,7 +734,7 @@ void UCTSearch::ponder() {
     auto last_output = 0;
     do {
         auto currstate = std::make_unique<GameState>(m_rootstate);
-        auto result = play_simulation(*currstate, m_root.get());
+        auto result = play_simulation(*currstate, m_root.get(), 200.0);
         if (result.valid()) {
             increment_playouts();
         }

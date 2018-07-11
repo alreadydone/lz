@@ -288,7 +288,8 @@ void UCTSearch::output_analysis(FastState & state, UCTNode & parent) {
         auto move_eval = node->get_visits() ?
                          static_cast<int>(node->get_pure_eval(color) * 10000) : 0;
         // Store data in array
-        sortable_data.emplace_back(move, node->get_visits(), move_eval, pv);
+        float N_num_f = node->get_score() * 100.0f;
+        sortable_data.emplace_back(move, node->get_visits(), move_eval, std::to_string(N_num_f), pv);
     }
     // Sort array to decide order
     std::stable_sort(rbegin(sortable_data), rend(sortable_data));

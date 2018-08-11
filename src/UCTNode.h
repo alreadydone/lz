@@ -66,6 +66,7 @@ public:
     float get_score() const;
     void set_score(float score);
     float get_eval(int tomove) const;
+    float get_pure_eval(int tomove) const;
     float get_net_eval(int tomove) const;
     void virtual_loss(void);
     void virtual_loss_undo(void);
@@ -92,6 +93,7 @@ private:
                        std::vector<Network::ScoreVertexPair>& nodelist,
                        float min_psa_ratio);
     double get_blackevals() const;
+    double get_whiteevals() const;
     void accumulate_eval(float eval);
     void kill_superkos(const KoState& state);
     void dirichlet_noise(float epsilon, float alpha);
@@ -108,8 +110,10 @@ private:
     // UCT eval
     float m_score;
     // Original net eval for this node (not children).
-    float m_net_eval{0.0f};
+    float m_net_blackeval{0.0f};
+    float m_net_whiteeval{0.0f};
     std::atomic<double> m_blackevals{0.0};
+    std::atomic<double> m_whiteevals{0.0};
     std::atomic<Status> m_status{ACTIVE};
     // Is someone adding scores to this node?
     bool m_is_expanding{false};

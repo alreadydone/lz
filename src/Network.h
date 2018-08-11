@@ -45,10 +45,11 @@ public:
         // pass
         float policy_pass;
 
-        // winrate
+        // winrates
         float winrate;
+        float opp_winrate;
 
-        Netresult() : policy(BOARD_SQUARES), policy_pass(0.0f), winrate(0.0f) {}
+        Netresult() : policy(BOARD_SQUARES), policy_pass(0.0f), winrate(0.0f), opp_winrate(0.0f) {}
     };
 
     static Netresult get_scored_moves(const GameState* const state,

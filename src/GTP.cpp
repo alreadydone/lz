@@ -31,6 +31,7 @@
 #include <random>
 #include <string>
 #include <vector>
+#include <boost/algorithm/string.hpp>
 
 #include "FastBoard.h"
 #include "FullBoard.h"
@@ -49,9 +50,11 @@ using namespace Utils;
 bool cfg_gtp_mode;
 bool cfg_allow_pondering;
 int cfg_num_threads;
-int cfg_max_threads;
 int cfg_max_playouts;
 int cfg_max_visits;
+size_t cfg_max_memory;
+size_t cfg_max_tree_size;
+int cfg_max_cache_ratio_percent;
 TimeManagement::enabled_t cfg_timemanage;
 int cfg_lagbuffer_cs;
 int cfg_resignpct;
@@ -91,6 +94,7 @@ bool cfg_dumbpass;
 std::vector<int> cfg_gpus;
 bool cfg_sgemm_exhaustive;
 bool cfg_tune_only;
+int cfg_batch_size;
 #ifdef USE_HALF
 precision_t cfg_precision;
 #endif
@@ -105,34 +109,52 @@ bool cfg_quiet;
 std::string cfg_options_str;
 bool cfg_benchmark;
 bool cfg_cpu_only;
+float cfg_virtual_loss;
+float cfg_logbase;
 int cfg_analyze_interval_centis;
 
 std::unique_ptr<Network> GTP::s_network;
 
 void GTP::initialize(std::unique_ptr<Network>&& net) {
     s_network = std::move(net);
+
+    bool result;
+    std::string message;
+    std::tie(result, message) =
+        set_max_memory(cfg_max_memory, cfg_max_cache_ratio_percent);
+    if (!result) {
+        // This should only ever happen with 60 block networks on 32bit machine.
+        myprintf("LOW MEMORY SETTINGS! Couldn't set default memory limits.\n");
+        myprintf("The network you are using might be too big\n");
+        myprintf("for the default settings on your system.\n");
+        throw std::runtime_error("Error setting memory requirements.");
+    }
+    myprintf(message.c_str());
+    myprintf("\n");
 }
 
 void GTP::setup_default_parameters() {
     cfg_gtp_mode = false;
     cfg_allow_pondering = true;
-    cfg_max_threads = std::max(1, std::min(SMP::get_num_cpus(), MAX_CPUS));
-#ifdef USE_OPENCL
-    // If we will be GPU limited, using many threads won't help much.
-    // Multi-GPU is a different story, but we will assume that those people
-    // who do those stuff will know what they are doing.
-    cfg_num_threads = std::min(2, cfg_max_threads);
-#else
-    cfg_num_threads = cfg_max_threads;
-#endif
+    // we will re-calculate this on Leela.cpp
+    cfg_num_threads = 0;
+
+    cfg_max_memory = UCTSearch::DEFAULT_MAX_MEMORY;
     cfg_max_playouts = UCTSearch::UNLIMITED_PLAYOUTS;
     cfg_max_visits = UCTSearch::UNLIMITED_PLAYOUTS;
+    // This will be overwriiten in initialize() after network size is known.
+    cfg_max_tree_size = UCTSearch::DEFAULT_MAX_MEMORY;
+    cfg_max_cache_ratio_percent = 10;
     cfg_timemanage = TimeManagement::AUTO;
     cfg_lagbuffer_cs = 100;
+    cfg_weightsfile = leelaz_file("best-network");
 #ifdef USE_OPENCL
     cfg_gpus = { };
     cfg_sgemm_exhaustive = false;
     cfg_tune_only = false;
+
+    // we will re-calculate this on Leela.cpp
+    cfg_batch_size = 0;
 #ifdef USE_HALF
     cfg_precision = precision_t::AUTO;
 #endif
@@ -174,6 +196,8 @@ void GTP::setup_default_parameters() {
 #else
     cfg_cpu_only = false;
 #endif
+    cfg_virtual_loss = 3.0f;
+    cfg_logbase = 0.0f;
 
     cfg_analyze_interval_centis = 0;
 
@@ -222,27 +246,27 @@ int dyn_komi_test(Network & net, GameState &game, int sym) {
     }
     accum_pos += vec.winrate;
     game.m_stm_komi = current_komi;
-    //if (loc_incr.empty()) { myprintf("Perfect weight file! ÕÍ√¿µƒ»®÷ÿ£°\n"); }
-    myprintf("‘⁄“‘œ¬Ã˘ƒø÷µ∏ΩΩ¸ §¬  «…œ…˝µƒ£∫Winrate increasing near ");
+    //if (loc_incr.empty()) { myprintf("Perfect weight file! ÂÆåÁæéÁöÑÊùÉÈáçÔºÅ\n"); }
+    myprintf("Âú®‰ª•‰∏ãË¥¥ÁõÆÂÄºÈôÑËøëËÉúÁéáÊòØ‰∏äÂçáÁöÑÔºöWinrate increasing near ");
     for (float s : loc_incr) { myprintf("%4.1f, ", s); }
     myprintf(".\n");
     myprintf("Negative komi total score: %e\n", accum_neg);
     myprintf("Positive komi total score: %e\n", accum_pos);
     const auto thres = 0.05f;
     if (accum_neg <= thres && accum_pos <= thres) {
-        myprintf("Weight file is of good quality for dynamic komi! »®÷ÿ÷ ¡ø≤ª¥Ì£¨ø…”√”⁄»√◊”£Ø≤ªÕÀ»√∞Ê°£\n");
+        myprintf("Weight file is of good quality for dynamic komi! ÊùÉÈáçË¥®Èáè‰∏çÈîôÔºåÂèØÁî®‰∫éËÆ©Â≠êÔºè‰∏çÈÄÄËÆ©Áâà„ÄÇ\n");
         return 0;
     }
     else if (accum_neg > thres && accum_pos > thres) {
-        myprintf("Weight file is unusable for dynamic komi. Sorry. »®÷ÿ÷ ¡ø≤ªº—£¨≤ªƒ‹”√”⁄»√◊”£Ø≤ªÕÀ»√∞Ê°£\n");
+        myprintf("Weight file is unusable for dynamic komi. Sorry. ÊùÉÈáçË¥®Èáè‰∏ç‰Ω≥Ôºå‰∏çËÉΩÁî®‰∫éËÆ©Â≠êÔºè‰∏çÈÄÄËÆ©Áâà„ÄÇ\n");
         return 1;
     }
     else if (accum_neg <= thres) {
-        myprintf("Weight file is of mediocre quality for dynamic komi. Use with the option --neg. »®÷ÿ÷ ¡ø÷–µ»£¨’˝Ã˘ƒø±Ìœ÷≤ªº—£¨Õ∆ºˆ π”√--neg≤Œ ˝°£\n");
+        myprintf("Weight file is of mediocre quality for dynamic komi. Use with the option --neg. ÊùÉÈáçË¥®Èáè‰∏≠Á≠âÔºåÊ≠£Ë¥¥ÁõÆË°®Áé∞‰∏ç‰Ω≥ÔºåÊé®Ëçê‰ΩøÁî®--negÂèÇÊï∞„ÄÇ\n");
         return 2;
     }
     else {
-        myprintf("Weight file is of mediocre quality for dynamic komi. Use with the option --pos. »®÷ÿ÷ ¡ø÷–µ»£¨∏∫Ã˘ƒø±Ìœ÷≤ªº—£¨Õ∆ºˆ π”√--pos≤Œ ˝°£\n");
+        myprintf("Weight file is of mediocre quality for dynamic komi. Use with the option --pos. ÊùÉÈáçË¥®Èáè‰∏≠Á≠âÔºåË¥üË¥¥ÁõÆË°®Áé∞‰∏ç‰Ω≥ÔºåÊé®Ëçê‰ΩøÁî®--posÂèÇÊï∞„ÄÇ\n");
         return 3;
     }
 }
@@ -277,6 +301,14 @@ const std::string GTP::s_commands[] = {
     "dyn_komi_test",
     "lz-analyze",
     "lz-genmove_analyze",
+    "lz-memory_report",
+    "lz-setoption",
+    ""
+};
+
+const std::string GTP::s_options[] = {
+    "option name Maximum Memory Use (MiB) type spin default 2048 min 128 max 131072",
+    "option name Percentage of memory for cache type spin default 10 min 1 max 99",
     ""
 };
 
@@ -310,7 +342,7 @@ std::string GTP::get_life_list(const GameState & game, bool live) {
     return result;
 }
 
-bool GTP::execute(GameState & game, std::string xinput) {
+bool GTP::execute(GameState & game, const std::string& xinput) {
     std::string input;
     static auto search = std::make_unique<UCTSearch>(game, *s_network);
 
@@ -427,6 +459,7 @@ bool GTP::execute(GameState & game, std::string xinput) {
         Training::clear_training();
         game.reset_game();
         search = std::make_unique<UCTSearch>(game, *s_network);
+        assert(UCTNodePointer::get_tree_size() == 0);
         gtp_printf(id, "");
         return true;
     } else if (command.find("komi") == 0) {
@@ -449,33 +482,26 @@ bool GTP::execute(GameState & game, std::string xinput) {
 
         return true;
     } else if (command.find("play") == 0) {
-        if (command.find("resign") != std::string::npos) {
-            game.play_move(FastBoard::RESIGN);
-            gtp_printf(id, "");
-        } else if (command.find("pass") != std::string::npos) {
-            game.play_move(FastBoard::PASS);
-            gtp_printf(id, "");
-        } else {
-            std::istringstream cmdstream(command);
-            std::string tmp;
-            std::string color, vertex;
+        std::istringstream cmdstream(command);
+        std::string tmp;
+        std::string color, vertex;
 
-            cmdstream >> tmp;   //eat play
-            cmdstream >> color;
-            cmdstream >> vertex;
+        cmdstream >> tmp;   //eat play
+        cmdstream >> color;
+        cmdstream >> vertex;
 
-            if (!cmdstream.fail()) {
-                if (!game.play_textmove(color, vertex)) {
-                    gtp_fail_printf(id, "illegal move");
-                } else {
-                    gtp_printf(id, "");
-                }
+        if (!cmdstream.fail()) {
+            if (!game.play_textmove(color, vertex)) {
+                gtp_fail_printf(id, "illegal move");
             } else {
-                gtp_fail_printf(id, "syntax not understood");
+                gtp_printf(id, "");
             }
+        } else {
+            gtp_fail_printf(id, "syntax not understood");
         }
         return true;
-    } else if (command.find("genmove") == 0 || command.find("lz-genmove_analyze") == 0) {
+    } else if (command.find("genmove") == 0
+               || command.find("lz-genmove_analyze") == 0) {
         auto analysis_output = command.find("lz-genmove_analyze") == 0;
         auto interval = 0;
 
@@ -537,22 +563,43 @@ bool GTP::execute(GameState & game, std::string xinput) {
     } else if (command.find("lz-analyze") == 0) {
         std::istringstream cmdstream(command);
         std::string tmp;
-        int interval;
+        auto who = game.board.get_to_move();
 
         cmdstream >> tmp; // eat lz-analyze
-        cmdstream >> interval;
+        cmdstream >> tmp; // eat side to move or interval
         if (!cmdstream.fail()) {
-            cfg_analyze_interval_centis = interval;
-        } else {
-            gtp_fail_printf(id, "syntax not understood");
-            return true;
+            if (tmp == "w" || tmp == "white") {
+                who = FastBoard::WHITE;
+            } else if (tmp == "b" || tmp == "black") {
+                who = FastBoard::BLACK;
+            } else {
+                // Not side to move, must be interval
+                try {
+                    cfg_analyze_interval_centis = std::stoi(tmp);
+                } catch(...) {
+                    gtp_fail_printf(id, "syntax not understood");
+                    return true;
+                }
+            }
+            if (tmp == "w" || tmp == "b" || tmp == "white" || tmp == "black") {
+                // We got a color, so the interval must come now.
+                int interval;
+                cmdstream >> interval;
+                if (!cmdstream.fail()) {
+                    cfg_analyze_interval_centis = interval;
+                } else {
+                    gtp_fail_printf(id, "syntax not understood");
+                    return true;
+                }
+            }
         }
-        // Start multi-line response
+        // Start multi-line response.
         if (id != -1) gtp_printf_raw("=%d\n", id);
         else gtp_printf_raw("=\n");
-        // now start pondering
+        // Now start pondering.
         if (!game.has_resigned()) {
             // Outputs winrate and pvs through gtp
+            game.set_to_move(who);
             search->ponder(true);
         }
         cfg_analyze_interval_centis = 0;
@@ -706,7 +753,8 @@ bool GTP::execute(GameState & game, std::string xinput) {
         if (cmdstream.fail()) {
             // Default = DIRECT with no symmetric change
             vec = s_network->get_output(
-                &game, Network::Ensemble::DIRECT, Network::IDENTITY_SYMMETRY, true);
+                &game, Network::Ensemble::DIRECT,
+                Network::IDENTITY_SYMMETRY, true);
         } else if (symmetry == "all") {
             for (auto s = 0; s < Network::NUM_SYMMETRIES; ++s) {
                 vec = s_network->get_output(
@@ -715,7 +763,8 @@ bool GTP::execute(GameState & game, std::string xinput) {
             }
         } else if (symmetry == "average" || symmetry == "avg") {
             vec = s_network->get_output(
-                &game, Network::Ensemble::AVERAGE, Network::NUM_SYMMETRIES, true);
+                &game, Network::Ensemble::AVERAGE,
+                Network::NUM_SYMMETRIES, true);
         } else {
             vec = s_network->get_output(
                 &game, Network::Ensemble::DIRECT, std::stoi(symmetry), true);
@@ -906,6 +955,9 @@ bool GTP::execute(GameState & game, std::string xinput) {
         cmdstream >> filename;
 
         auto sgf_text = SGFTree::state_to_string(game, 0);
+        // GTP says consecutive newlines terminate the output,
+        // so we must filter those.
+        boost::replace_all(sgf_text, "\n\n", "\n");
 
         if (cmdstream.fail()) {
             gtp_printf(id, "%s\n", sgf_text.c_str());
@@ -1005,10 +1057,167 @@ bool GTP::execute(GameState & game, std::string xinput) {
         } else {
             gtp_fail_printf(id, "syntax not understood");
         }
+        return true;
+    } else if (command.find("lz-memory_report") == 0) {
+        auto base_memory = get_base_memory();
+        auto tree_size = add_overhead(UCTNodePointer::get_tree_size());
+        auto cache_size = add_overhead(s_network->get_estimated_cache_size());
 
+        auto total = base_memory + tree_size + cache_size;
+        gtp_printf(id,
+            "Estimated total memory consumption: %d MiB.\n"
+            "Network with overhead: %d MiB / Search tree: %d MiB / Network cache: %d\n",
+            total / MiB, base_memory / MiB, tree_size / MiB, cache_size / MiB);
+        return true;
+    } else if (command.find("lz-setoption") == 0) {
+        return execute_setoption(id, command);
+    }
+    gtp_fail_printf(id, "unknown command");
+    return true;
+}
+
+std::pair<std::string, std::string> GTP::parse_option(std::istringstream& is) {
+    std::string token, name, value;
+
+    // Read option name (can contain spaces)
+    while (is >> token && token != "value")
+        name += std::string(" ", name.empty() ? 0 : 1) + token;
+
+    // Read option value (can contain spaces)
+    while (is >> token)
+        value += std::string(" ", value.empty() ? 0 : 1) + token;
+
+    return std::make_pair(name, value);
+}
+
+size_t GTP::get_base_memory() {
+    // At the moment of writing the memory consumption is
+    // roughly network size + 85 for one GPU and + 160 for two GPUs.
+#ifdef USE_OPENCL
+    auto gpus = std::max(cfg_gpus.size(), size_t{1});
+    return s_network->get_estimated_size() + 85 * MiB * gpus;
+#else
+    return s_network->get_estimated_size();
+#endif
+}
+
+std::pair<bool, std::string> GTP::set_max_memory(size_t max_memory,
+    int cache_size_ratio_percent) {
+    if (max_memory == 0) {
+        max_memory = UCTSearch::DEFAULT_MAX_MEMORY;
+    }
+
+    // Calculate amount of memory available for the search tree +
+    // NNCache by estimating a constant memory overhead first.
+    auto base_memory = get_base_memory();
+
+    if (max_memory < base_memory) {
+        return std::make_pair(false, "Not enough memory for network. " +
+            std::to_string(base_memory / MiB) + " MiB required.");
+    }
+
+    auto max_memory_for_search = max_memory - base_memory;
+
+    assert(cache_size_ratio_percent >= 1);
+    assert(cache_size_ratio_percent <= 99);
+    auto max_cache_size = max_memory_for_search *
+        cache_size_ratio_percent / 100;
+
+    auto max_cache_count =
+        (int)(remove_overhead(max_cache_size) / NNCache::ENTRY_SIZE);
+
+    // Verify if the setting would not result in too little cache.
+    if (max_cache_count < NNCache::MIN_CACHE_COUNT) {
+        return std::make_pair(false, "Not enough memory for cache.");
+    }
+    auto max_tree_size = max_memory_for_search - max_cache_size;
+
+    if (max_tree_size < UCTSearch::MIN_TREE_SPACE) {
+        return std::make_pair(false, "Not enough memory for search tree.");
+    }
+
+    // Only if settings are ok we store the values in config.
+    cfg_max_memory = max_memory;
+    cfg_max_cache_ratio_percent = cache_size_ratio_percent;
+    // Set max_tree_size.
+    cfg_max_tree_size = remove_overhead(max_tree_size);
+    // Resize cache.
+    s_network->nncache_resize(max_cache_count);
+
+    return std::make_pair(true, "Setting max tree size to " +
+        std::to_string(max_tree_size / MiB) + " MiB and cache size to " +
+        std::to_string(max_cache_size / MiB) +
+        " MiB.");
+}
+
+bool GTP::execute_setoption(int id, const std::string &command) {
+    std::istringstream cmdstream(command);
+    std::string tmp, name_token;
+
+    // Consume lz_setoption, name.
+    cmdstream >> tmp >> name_token;
+
+    // Print available options if called without an argument.
+    if (cmdstream.fail()) {
+        std::string options_out_tmp("");
+        for (int i = 0; s_options[i].size() > 0; i++) {
+            options_out_tmp = options_out_tmp + "\n" + s_options[i];
+        }
+        gtp_printf(id, options_out_tmp.c_str());
         return true;
     }
 
-    gtp_fail_printf(id, "unknown command");
+    if (name_token.find("name") != 0) {
+        gtp_fail_printf(id, "incorrect syntax for lz-setoption");
+        return true;
+    }
+
+    std::string name, value;
+    std::tie(name, value) = parse_option(cmdstream);
+
+    if (name == "maximum memory use (mib)") {
+        std::istringstream valuestream(value);
+        int max_memory_in_mib;
+        valuestream >> max_memory_in_mib;
+        if (!valuestream.fail()) {
+            if (max_memory_in_mib < 128 || max_memory_in_mib > 131072) {
+                gtp_fail_printf(id, "incorrect value");
+                return true;
+            }
+            bool result;
+            std::string reason;
+            std::tie(result, reason) = set_max_memory(max_memory_in_mib * MiB,
+                cfg_max_cache_ratio_percent);
+            if (result) {
+                gtp_printf(id, reason.c_str());
+            } else {
+                gtp_fail_printf(id, reason.c_str());
+            }
+            return true;
+        } else {
+            gtp_fail_printf(id, "incorrect value");
+            return true;
+        }
+    } else if (name == "percentage of memory for cache") {
+        std::istringstream valuestream(value);
+        int cache_size_ratio_percent;
+        valuestream >> cache_size_ratio_percent;
+        if (cache_size_ratio_percent < 1 || cache_size_ratio_percent > 99) {
+            gtp_fail_printf(id, "incorrect value");
+            return true;
+        }
+        bool result;
+        std::string reason;
+        std::tie(result, reason) = set_max_memory(cfg_max_memory,
+            cache_size_ratio_percent);
+        if (result) {
+            gtp_printf(id, reason.c_str());
+        } else {
+            gtp_fail_printf(id, reason.c_str());
+        }
+        return true;
+    } else {
+        gtp_fail_printf(id, "Unknown option");
+    }
     return true;
 }

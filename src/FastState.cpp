@@ -50,7 +50,7 @@ void FastState::set_komi(float komi) {
     m_komi = komi;
 }
 
-void FastState::reset_game(void) {
+void FastState::reset_game() {
     reset_board();
 
     m_movenum = 0;
@@ -60,11 +60,11 @@ void FastState::reset_game(void) {
     m_lastmove = FastBoard::NO_VERTEX;
 }
 
-void FastState::reset_board(void) {
+void FastState::reset_board() {
     board.reset_board(board.get_boardsize());
 }
 
-bool FastState::is_move_legal(int color, int vertex) {
+bool FastState::is_move_legal(int color, int vertex) const {
     return vertex == FastBoard::PASS ||
            vertex == FastBoard::RESIGN ||
            (vertex != m_komove &&
@@ -108,7 +108,7 @@ size_t FastState::get_movenum() const {
     return m_movenum;
 }
 
-int FastState::get_last_move(void) const {
+int FastState::get_last_move() const {
     return m_lastmove;
 }
 

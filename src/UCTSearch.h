@@ -39,6 +39,7 @@ public:
     SearchResult() = default;
     bool valid() const { return m_valid;  }
     float eval() const { return m_eval;  }
+    float discrepancy{0.0f};
     static SearchResult from_eval(float eval) {
         return SearchResult(eval);
     }
@@ -53,7 +54,7 @@ public:
     }
 private:
     explicit SearchResult(float eval)
-        : m_valid(true), m_eval(eval) {}
+        : m_valid(true), m_eval(eval), discrepancy(0.0f) {}
     bool m_valid{false};
     float m_eval{0.0f};
 };
@@ -84,12 +85,16 @@ public:
     static constexpr passflag_t NORESIGN = 1 << 1;
 
     /*
-        Maximum size of the tree in memory. Nodes are about
-        56 bytes, so limit to ~1.3GiB on 32-bits and about
-        5.2GiB on 64-bits.
+        Default memory limit in bytes.
+        ~1.3GiB on 32-bits and about 5.2GiB on 64-bits.
     */
-    static constexpr auto MAX_TREE_SIZE =
-        (sizeof(void*) == 4 ? 25'000'000 : 100'000'000);
+    static constexpr size_t DEFAULT_MAX_MEMORY =
+        (sizeof(void*) == 4 ? 1'325'000'000 : 5'200'000'000);
+
+    /*
+        Minimum allowed size for maximum tree size.
+    */
+    static constexpr size_t MIN_TREE_SPACE = 100'000'000;
 
     /*
         Value representing unlimited visits or playouts. Due to

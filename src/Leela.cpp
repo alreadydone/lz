@@ -20,6 +20,7 @@
 
 #include <cstdint>
 #include <algorithm>
+#include <boost/filesystem.hpp>
 #include <boost/format.hpp>
 #include <boost/program_options.hpp>
 #include <cstdio>
@@ -49,6 +50,74 @@ static void license_blurb() {
         PROGRAM_VERSION);
 }
 
+static void calculate_thread_count_cpu(boost::program_options::variables_map & vm) {
+    // if we are CPU-based, there is no point using more than the number of CPUs
+    auto cfg_max_threads = std::min(SMP::get_num_cpus(), MAX_CPUS);
+
+    if (vm.count("threads")) {
+        auto num_threads = vm["threads"].as<int>();
+        if (num_threads > cfg_max_threads) {
+            myprintf("Clamping threads to maximum = %d\n", cfg_max_threads);
+            num_threads = cfg_max_threads;
+        }
+        cfg_num_threads = num_threads;
+    } else {
+        cfg_num_threads = cfg_max_threads;
+    }
+}
+
+#ifdef USE_OPENCL
+static void calculate_thread_count_gpu(boost::program_options::variables_map & vm) {
+    auto cfg_max_threads = MAX_CPUS;
+
+    // Default thread count : GPU case
+    // 1) if no args are given, use batch size of 5 and thread count of (batch size) * (number of gpus)
+    // 2) if number of threads are given, use batch size of (thread count) / (number of gpus)
+    // 3) if number of batches are given, use thread count of (batch size) * (number of gpus)
+    auto gpu_count = static_cast<int>(cfg_gpus.size());
+    if (gpu_count == 0) {
+        // size of zero if autodetect GPU : default to 1
+        gpu_count = 1;
+    }
+
+    if (vm.count("threads")) {
+        auto num_threads = vm["threads"].as<int>();
+        if (num_threads > cfg_max_threads) {
+            myprintf("Clamping threads to maximum = %d\n", cfg_max_threads);
+            num_threads = cfg_max_threads;
+        }
+        cfg_num_threads = num_threads;
+
+        if (vm.count("batchsize")) {
+            cfg_batch_size = vm["batchsize"].as<int>();
+        } else {
+            cfg_batch_size = cfg_num_threads / gpu_count;
+
+            // no idea why somebody wants to use threads less than the number of GPUs
+            // but should at least prevent crashing
+            if (cfg_batch_size == 0) {
+                cfg_batch_size = 1;
+            }
+        }
+    } else {
+        if (vm.count("batchsize")) {
+            cfg_batch_size = vm["batchsize"].as<int>();
+        } else {
+            cfg_batch_size = 5;
+        }
+
+        cfg_num_threads = std::min(cfg_max_threads, cfg_batch_size * gpu_count);
+    }
+
+    if (cfg_num_threads < cfg_batch_size) {
+        printf("Threads number = %d must be larger than batch size = %d\n", cfg_num_threads, cfg_batch_size);
+        exit(EXIT_FAILURE);
+    }
+
+
+}
+#endif
+
 static void parse_commandline(int argc, char *argv[]) {
     namespace po = boost::program_options;
     // Declare the supported options.
@@ -56,8 +125,8 @@ static void parse_commandline(int argc, char *argv[]) {
     gen_desc.add_options()
         ("help,h", "Show commandline options.")
         ("gtp,g", "Enable GTP mode.")
-        ("threads,t", po::value<int>()->default_value(cfg_num_threads),
-                      "Number of threads to use.")
+        ("threads,t", po::value<int>(),
+                      "Number of threads to use.  Defaults to max number of threads on system.")
         ("playouts,p", po::value<int>(),
                        "Weaken engine by limiting the number of playouts. "
                        "Requires --noponder.")
@@ -68,7 +137,7 @@ static void parse_commandline(int argc, char *argv[]) {
         ("resignpct,r", po::value<int>(),
                         "Resign when winrate is less than x%.\n"
                         "-1 uses 10% but scales for handicap.")
-        ("weights,w", po::value<std::string>(), "File with network weights.")
+        ("weights,w", po::value<std::string>()->default_value(cfg_weightsfile), "File with network weights.")
         ("logfile,l", po::value<std::string>(), "File to log input/output to.")
         ("quiet,q", "Disable all diagnostic output.")
         ("timemanage", po::value<std::string>(),//->default_value("auto"),
@@ -82,6 +151,8 @@ static void parse_commandline(int argc, char *argv[]) {
         ("benchmark", "Test network and exit. Default args:\n-v3200 --noponder "
                       "-m0 -t1 -s1.")
         ("cpu-only", "Use CPU-only implementation and do not use GPU.")
+        ("virtual-loss", po::value<float>())
+        ("logbase", po::value<float>())
         ("handicap", "Handicap mode.")
         ("nonslack", "Non-slack mode.")
         ("max-wr", po::value<float>(), "Maximal white winrate.")
@@ -108,6 +179,7 @@ static void parse_commandline(int argc, char *argv[]) {
                 "ID of the OpenCL device(s) to use (disables autodetection).")
         ("full-tuner", "Try harder to find an optimal OpenCL tuning.")
         ("tune-only", "Tune OpenCL only and then exit.")
+        ("batchsize", po::value<int>(), "Max batch size. Default is the number of threads divided by the number of GPUs")
 #ifdef USE_HALF
         ("precision", po::value<std::string>(), "Floating-point precision (single/half/auto).\n"
                                                 "Default is to auto which automatically determines which one to use.")
@@ -315,10 +387,10 @@ static void parse_commandline(int argc, char *argv[]) {
         cfg_logfile_handle = fopen(cfg_logfile.c_str(), "a");
     }
 
-    if (vm.count("weights")) {
-        cfg_weightsfile = vm["weights"].as<std::string>();
-    } else {
+    cfg_weightsfile = vm["weights"].as<std::string>();
+    if (vm["weights"].defaulted() && !boost::filesystem::exists(cfg_weightsfile)) {
         printf("A network weights file is required to use the program.\n");
+        printf("By default, Leela Zero looks for it in %s.\n", cfg_weightsfile.c_str());
         exit(EXIT_FAILURE);
     }
 
@@ -327,12 +399,16 @@ static void parse_commandline(int argc, char *argv[]) {
     }
 
 #ifdef USE_OPENCL
+    // If we will be GPU limited, the optimal number of threads varies quite differently
+    // due to the batching behavior - we need threads that are sufficient enough to flood
+    // all the GPUs.
+#else
+#endif
+
+
+#ifdef USE_OPENCL
     if (vm.count("gpu")) {
         cfg_gpus = vm["gpu"].as<std::vector<int> >();
-        // if we use OpenCL, we probably need more threads for the max so that we can saturate the GPU.
-        cfg_max_threads *= cfg_gpus.size();
-        // we can't exceed MAX_CPUS
-        cfg_max_threads = std::min(cfg_max_threads, MAX_CPUS);
     }
 
     if (vm.count("full-tuner")) {
@@ -342,7 +418,6 @@ static void parse_commandline(int argc, char *argv[]) {
     if (vm.count("tune-only")) {
         cfg_tune_only = true;
     }
-
 #ifdef USE_HALF
     if (vm.count("precision")) {
         auto precision = vm["precision"].as<std::string>();
@@ -358,15 +433,19 @@ static void parse_commandline(int argc, char *argv[]) {
         }
     }
 #endif
+#else
+    cfg_cpu_only = true;
 #endif
+    if (vm.count("cpu-only")) {
+        cfg_cpu_only = true;
+    }
 
-    if (!vm["threads"].defaulted()) {
-        auto num_threads = vm["threads"].as<int>();
-        if (num_threads > cfg_max_threads) {
-            myprintf("Clamping threads to maximum = %d\n", cfg_max_threads);
-            num_threads = cfg_max_threads;
-        }
-        cfg_num_threads = num_threads;
+    if (cfg_cpu_only) {
+        calculate_thread_count_cpu(vm);
+    } else {
+#ifdef USE_OPENCL
+        calculate_thread_count_gpu(vm);
+#endif
     }
     myprintf("Using %d thread(s).\n", cfg_num_threads);
 
@@ -391,8 +470,12 @@ static void parse_commandline(int argc, char *argv[]) {
         cfg_dumbpass = true;
     }
 
-    if (vm.count("cpu-only")) {
-        cfg_cpu_only = true;
+    if (vm.count("virtual-loss")) {
+        cfg_virtual_loss = vm["virtual-loss"].as<float>();
+    }
+
+    if (vm.count("logbase")) {
+        cfg_logbase = vm["logbase"].as<float>();
     }
 
     if (vm.count("playouts")) {
@@ -472,14 +555,11 @@ static void parse_commandline(int argc, char *argv[]) {
         cfg_random_cnt = 0;
         cfg_rng_seed = 1;
         cfg_timemanage = TimeManagement::OFF;  // Reliable number of playouts.
-        if (vm["threads"].defaulted()) {
-            cfg_num_threads = 1;
-        }
+
         if (!vm.count("playouts") && !vm.count("visits")) {
             cfg_max_visits = 3200; // Default to self-play and match values.
         }
     }
-
 
     auto out = std::stringstream{};
     for (auto i = 1; i < argc; i++) {

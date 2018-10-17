@@ -32,9 +32,11 @@
 extern bool cfg_gtp_mode;
 extern bool cfg_allow_pondering;
 extern int cfg_num_threads;
-extern int cfg_max_threads;
 extern int cfg_max_playouts;
 extern int cfg_max_visits;
+extern size_t cfg_max_memory;
+extern size_t cfg_max_tree_size;
+extern int cfg_max_cache_ratio_percent;
 extern TimeManagement::enabled_t cfg_timemanage;
 extern int cfg_lagbuffer_cs;
 extern int cfg_resignpct;
@@ -74,6 +76,7 @@ extern bool cfg_dumbpass;
 extern std::vector<int> cfg_gpus;
 extern bool cfg_sgemm_exhaustive;
 extern bool cfg_tune_only;
+extern int cfg_batch_size;
 #ifdef USE_HALF
 enum class precision_t {
     AUTO, SINGLE, HALF
@@ -91,7 +94,11 @@ extern bool cfg_quiet;
 extern std::string cfg_options_str;
 extern bool cfg_benchmark;
 extern bool cfg_cpu_only;
+extern float cfg_virtual_loss;
+extern float cfg_logbase;
 extern int cfg_analyze_interval_centis;
+
+static constexpr size_t MiB = 1024LL * 1024LL;
 
 /*
     A list of all valid GTP2 commands is defined here:
@@ -102,13 +109,24 @@ class GTP {
 public:
     static std::unique_ptr<Network> s_network;
     static void initialize(std::unique_ptr<Network>&& network);
-    static bool execute(GameState & game, std::string xinput);
+    static bool execute(GameState & game, const std::string& xinput);
+    static bool execute_setoption(int id, const std::string& command);
     static void setup_default_parameters();
 private:
     static constexpr int GTP_VERSION = 2;
 
     static std::string get_life_list(const GameState & game, bool live);
     static const std::string s_commands[];
+    static const std::string s_options[];
+    static std::pair<std::string, std::string> parse_option(
+        std::istringstream& is);
+    static std::pair<bool, std::string> set_max_memory(
+        size_t max_memory, int cache_size_ratio_percent);
+
+    // Memory estimation helpers
+    static size_t get_base_memory();
+    static size_t add_overhead(size_t s) { return s * 11LL / 10LL; }
+    static size_t remove_overhead(size_t s) { return s * 10LL / 11LL; }
 };
 
 

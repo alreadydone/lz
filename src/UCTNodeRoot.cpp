@@ -379,7 +379,7 @@ void UCTNode::clear(Network & net, std::atomic<int>& nodes, GameState& root_stat
         tmpstate.play_move(get_first_child()->get_move());
         eval = 1.0f - white_net_eval(net, tmpstate);
     }
-    update(eval);
+    update(eval, 0.0f);
     eval = (root_state.get_to_move() == FastBoard::BLACK ? eval : 1.0f - eval);
 }
 
@@ -409,7 +409,7 @@ void UCTNode::prepare_root_node(Network & network, int color, // redundant argum
             tmpstate.play_move(get_first_child()->get_move());
             root_eval = 1.0f - white_net_eval(network, tmpstate);
         }
-        update(root_eval);
+        update(root_eval, 0.0f);
         root_eval = (color == FastBoard::BLACK ? root_eval : 1.0f - root_eval);
     }
 

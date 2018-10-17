@@ -28,6 +28,9 @@
 #include <random>
 #include <cmath>
 #include <fstream>
+#ifndef USE_BLAS
+#include <Eigen/Dense>
+#endif
 
 #include "GTP.h"
 #include "OpenCL.h"
@@ -36,6 +39,16 @@
 #include "Random.h"
 
 const auto TUNER_FILE_LOCAL = std::string("leelaz_opencl_tuning");
+
+#ifndef USE_BLAS
+// Eigen helpers
+template <typename T>
+using EigenMatrixMap =
+    Eigen::Map<Eigen::Matrix<T, Eigen::Dynamic, Eigen::Dynamic>>;
+template <typename T>
+using ConstEigenMatrixMap =
+    Eigen::Map<const Eigen::Matrix<T, Eigen::Dynamic, Eigen::Dynamic>>;
+#endif
 
 template <typename net_t> static std::string getTunerKernel();
 template <typename net_t> static float getTunerMaxError();
@@ -77,8 +90,9 @@ static void sgemmBatched_ref(const std::vector<net_t>& a,
         auto offset_u = batch * m * k;
         auto offset_v = batch * n * k;
         auto offset_m = batch * m * n;
-
-        // Calculates transpose(tranpose(A) * B)
+#ifdef USE_BLAS
+        // Calculates C = transpose(tranpose(A) * B) in row major, or
+        // C = A * transpose(B) in column major.
         for (auto i = 0; i < m; i++) {
             for (auto j = 0; j < n; j++) {
                 auto acc = 0.0f;
@@ -88,6 +102,12 @@ static void sgemmBatched_ref(const std::vector<net_t>& a,
                 cr[j * m + i + offset_m] = acc;
             }
         }
+#else
+        auto C = EigenMatrixMap<float>(cr.data() + offset_m, m, n);
+        auto A = ConstEigenMatrixMap<float>(ar.data() + offset_u, m, k);
+        auto B = ConstEigenMatrixMap<float>(br.data() + offset_v, n, k);
+        C.noalias() = (A * B.transpose());
+#endif
     }
 
     std::copy(begin(cr), end(cr), begin(c));
@@ -134,8 +154,9 @@ bool Tuner<net_t>::valid_config_sgemm(Parameters p, bool exhaustive) {
 }
 
 template <typename net_t>
-Parameters Tuner<net_t>::get_parameters_by_int(const std::vector<Configurations>& opts,
-                                        const int n) {
+Parameters Tuner<net_t>::get_parameters_by_int(
+    const std::vector<Configurations>& opts, const int n) {
+
     Parameters param;
     std::vector<size_t> choices(opts.size());
 
@@ -465,10 +486,11 @@ std::string Tuner<net_t>::tune_sgemm(const int m, const int n, const int k,
 template <typename net_t>
 void Tuner<net_t>::store_sgemm_tuners(const int m, const int n, const int k,
                                const int batch_size, std::string tuners) {
+    auto tuner_file = leelaz_file(TUNER_FILE_LOCAL);
     auto file_contents = std::vector<std::string>();
     {
         // Read the previous contents to string
-        auto file = std::ifstream{TUNER_FILE_LOCAL};
+        auto file = std::ifstream{tuner_file};
         if (file.good()) {
             auto line = std::string{};
             while (std::getline(file, line)) {
@@ -476,7 +498,7 @@ void Tuner<net_t>::store_sgemm_tuners(const int m, const int n, const int k,
             }
         }
     }
-    auto file = std::ofstream{TUNER_FILE_LOCAL};
+    auto file = std::ofstream{tuner_file};
 
     auto device_name = m_opencl.get_device_name();
     auto tuning_params = std::stringstream{};
@@ -501,7 +523,7 @@ void Tuner<net_t>::store_sgemm_tuners(const int m, const int n, const int k,
     if (file.fail()) {
         myprintf("Could not save the tuning result.\n");
         myprintf("Do I have write permissions on %s?\n",
-            TUNER_FILE_LOCAL.c_str());
+            tuner_file.c_str());
     }
 }
 
@@ -555,7 +577,8 @@ std::string Tuner<net_t>::sgemm_tuners_from_line(std::string line,
 template <typename net_t>
 std::string Tuner<net_t>::load_sgemm_tuners(const int m, const int n, const int k,
                                      const int batch_size) {
-    auto file = std::ifstream{TUNER_FILE_LOCAL};
+    auto tuner_file = leelaz_file(TUNER_FILE_LOCAL);
+    auto file = std::ifstream{tuner_file};
     if (!cfg_sgemm_exhaustive && file.good()) {
         auto line = std::string{};
         while (std::getline(file, line)) {

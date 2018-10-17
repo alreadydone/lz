@@ -112,12 +112,16 @@ void OpenCL_Network<net_t>::add_weights(size_t layer,
     }
 
     auto weightSize = size * sizeof(net_t);
-    m_layers.back().weights.emplace_back(
+
+    auto queue = cl::CommandQueue(getOpenCL().m_context, getOpenCL().m_device);
+    auto buffer = cl::Buffer(
         m_opencl.m_context,
-        CL_MEM_COPY_HOST_PTR | CL_MEM_READ_ONLY,
+        CL_MEM_READ_ONLY,
         weightSize,
-        const_cast<net_t*>(weights)
+        nullptr
     );
+    queue.enqueueWriteBuffer(buffer, CL_TRUE, 0, weightSize, const_cast<net_t*>(weights));
+    m_layers.back().weights.push_back(std::move(buffer));
 }
 
 template <typename net_t>
@@ -149,9 +153,9 @@ void OpenCL_Network<net_t>::forward(const std::vector<float>& input,
         const auto n_ceil = ceilMultiple(ceilMultiple(tiles, nwg), vwn);
 
         const auto alloc_inSize =
-            MAX_BATCH * NUM_INTERSECTIONS * max_channels * sizeof(net_t);
+            getOpenCL().m_batch_size * NUM_INTERSECTIONS * max_channels * sizeof(net_t);
         const auto alloc_vm_size =
-            MAX_BATCH * WINOGRAD_TILE * m_ceil * n_ceil * sizeof(net_t);
+            getOpenCL().m_batch_size * WINOGRAD_TILE * m_ceil * n_ceil * sizeof(net_t);
 
         auto v_zeros = std::vector<net_t>(alloc_vm_size);
 
@@ -171,10 +175,10 @@ void OpenCL_Network<net_t>::forward(const std::vector<float>& input,
 
         opencl_context.m_pinnedOutBuffer_pol = cl::Buffer(
             m_opencl.m_context,
-            CL_MEM_WRITE_ONLY | CL_MEM_ALLOC_HOST_PTR, MAX_BATCH * finalSize_pol);
+            CL_MEM_WRITE_ONLY | CL_MEM_ALLOC_HOST_PTR, getOpenCL().m_batch_size * finalSize_pol);
         opencl_context.m_pinnedOutBuffer_val = cl::Buffer(
             m_opencl.m_context,
-            CL_MEM_WRITE_ONLY | CL_MEM_ALLOC_HOST_PTR, MAX_BATCH * finalSize_val);
+            CL_MEM_WRITE_ONLY | CL_MEM_ALLOC_HOST_PTR, getOpenCL().m_batch_size * finalSize_val);
 
         opencl_context.m_buffers_allocated = true;
     }
@@ -622,7 +626,7 @@ void OpenCL<net_t>::process_tuners(std::string tuners) {
 }
 
 template <typename net_t>
-std::vector<size_t> OpenCL<net_t>::get_sgemm_tuners(void) {
+std::vector<size_t> OpenCL<net_t>::get_sgemm_tuners() {
     std::vector<size_t> tuners;
 
     tuners.emplace_back(m_sgemm_tuners.mwg);
@@ -637,7 +641,7 @@ std::vector<size_t> OpenCL<net_t>::get_sgemm_tuners(void) {
 }
 
 template <typename net_t>
-void OpenCL<net_t>::initialize(const int channels, int gpu, bool silent) {
+OpenCL<net_t>::OpenCL(int gpu, bool silent) {
     std::vector<cl::Platform> platforms;
     try {
         cl::Platform::get(&platforms);
@@ -752,6 +756,22 @@ void OpenCL<net_t>::initialize(const int channels, int gpu, bool silent) {
     m_context = context;
     m_device = best_device;
 
+    m_cl_args = getClArgs<net_t>();
+
+    myprintf("Half precision compute support: ");
+    if (m_device.getInfo<CL_DEVICE_EXTENSIONS>().find("cl_khr_fp16")
+        != std::string::npos) {
+        myprintf("Yes.\n");
+        m_fp16_compute = true;
+        m_cl_args += " -DFP16_SUPPORT";
+    } else {
+        myprintf("No.\n");
+    }
+}
+
+template <typename net_t>
+void OpenCL<net_t>::initialize(const int channels, int batch_size) {
+    m_batch_size = batch_size;
     // Make program of the source code in the context
     try {
         m_program = cl::Program(m_context,
@@ -765,20 +785,9 @@ void OpenCL<net_t>::initialize(const int channels, int gpu, bool silent) {
         throw std::runtime_error("Error getting OpenCL kernels.");
     }
 
-    m_cl_args = getClArgs<net_t>();
-
-    myprintf("Half precision compute support: ");
-    if (m_device.getInfo<CL_DEVICE_EXTENSIONS>().find("cl_khr_fp16")
-        != std::string::npos) {
-        myprintf("YES\n");
-        m_cl_args += " -DFP16_SUPPORT";
-    } else {
-        myprintf("NO\n");
-    }
-
     auto t = Tuner<net_t>(*this, m_context, m_device);
     auto sgemm_tuners =
-        t.load_sgemm_tuners(channels, WINOGRAD_P, channels, WINOGRAD_TILE);
+        t.load_sgemm_tuners(channels, batch_size * WINOGRAD_P, channels, WINOGRAD_TILE);
 
     // Exit immediately after tuning. Some NVIDIA drivers are buggy
     // and will fail to compile the rest of the kernels after a tuning
@@ -810,11 +819,11 @@ void OpenCL<net_t>::initialize(const int channels, int gpu, bool silent) {
 
     m_wavefront_size =
         tdata.m_sgemm_kernel.getWorkGroupInfo<
-            CL_KERNEL_PREFERRED_WORK_GROUP_SIZE_MULTIPLE>(best_device);
+            CL_KERNEL_PREFERRED_WORK_GROUP_SIZE_MULTIPLE>(m_device);
     myprintf("Wavefront/Warp size: %d\n", m_wavefront_size);
 
-    m_max_workgroup_size = best_device.getInfo<CL_DEVICE_MAX_WORK_GROUP_SIZE>();
-    m_max_workgroup_dims = best_device.getInfo<CL_DEVICE_MAX_WORK_ITEM_SIZES>();
+    m_max_workgroup_size = m_device.getInfo<CL_DEVICE_MAX_WORK_GROUP_SIZE>();
+    m_max_workgroup_dims = m_device.getInfo<CL_DEVICE_MAX_WORK_ITEM_SIZES>();
 
     myprintf("Max workgroup size: %d\n", m_max_workgroup_size);
     myprintf("Max workgroup dimensions: ");
@@ -824,6 +833,11 @@ void OpenCL<net_t>::initialize(const int channels, int gpu, bool silent) {
     myprintf("\n");
 
     m_init_ok = true;
+}
+
+template <typename net_t>
+bool OpenCL<net_t>::has_fp16_compute() {
+    return m_fp16_compute;
 }
 
 template <typename net_t>

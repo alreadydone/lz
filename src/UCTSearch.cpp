@@ -684,6 +684,12 @@ void UCTSearch::increment_playouts() {
     m_playouts++;
 }
 
+#ifdef USE_OPENCL
+#ifndef NDEBUG
+extern std::atomic<size_t> batch_stats[];
+#endif
+#endif
+
 int UCTSearch::think(int color, passflag_t passflag) {
     // Start counting time for us
     m_rootstate.start_clock(color);
@@ -765,11 +771,18 @@ int UCTSearch::think(int color, passflag_t passflag) {
 
     Time elapsed;
     int elapsed_centis = Time::timediff_centis(start, elapsed);
-    myprintf("%d visits, %d nodes, %d playouts, %.0f n/s\n\n",
-             m_root->get_visits(),
-             m_nodes.load(),
-             m_playouts.load(),
-             (m_playouts * 100.0) / (elapsed_centis+1));
+    if (elapsed_centis+1 > 0) {
+        myprintf("%d visits, %d nodes, %d playouts, %.0f n/s\n\n",
+                 m_root->get_visits(),
+                 static_cast<int>(m_nodes),
+                 static_cast<int>(m_playouts),
+                 (m_playouts * 100.0) / (elapsed_centis+1));
+#ifdef USE_OPENCL
+#ifndef NDEBUG
+        myprintf("batch stats: %d %d\n", batch_stats[0].load(), batch_stats[1].load());
+#endif
+#endif
+    }
     int bestmove = get_best_move(passflag);
 
     // Copy the root state. Use to check for tree re-use in future calls.

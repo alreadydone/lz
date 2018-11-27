@@ -125,10 +125,11 @@ void OpenCL_Network<net_t>::add_weights(size_t layer,
 }
 
 template <typename net_t>
-void OpenCL_Network<net_t>::forward(const std::vector<float>& input,
+void OpenCL_Network<net_t>::forward(const std::vector<net_t>& input,
                              std::vector<float>& output_pol,
                              std::vector<float>& output_val,
                              OpenCLContext & opencl_context,
+                             std::condition_variable& cv,
                              const int batch_size) {
     constexpr auto tiles = WINOGRAD_P;
     constexpr auto one_plane = NUM_INTERSECTIONS * sizeof(net_t);
@@ -153,9 +154,9 @@ void OpenCL_Network<net_t>::forward(const std::vector<float>& input,
         const auto n_ceil = ceilMultiple(ceilMultiple(tiles, nwg), vwn);
 
         const auto alloc_inSize =
-            MAX_BATCH * NUM_INTERSECTIONS * max_channels * sizeof(net_t);
+            getOpenCL().m_batch_size * NUM_INTERSECTIONS * max_channels * sizeof(net_t);
         const auto alloc_vm_size =
-            MAX_BATCH * WINOGRAD_TILE * m_ceil * n_ceil * sizeof(net_t);
+            getOpenCL().m_batch_size * WINOGRAD_TILE * m_ceil * n_ceil * sizeof(net_t);
 
         auto v_zeros = std::vector<net_t>(alloc_vm_size);
 
@@ -175,10 +176,10 @@ void OpenCL_Network<net_t>::forward(const std::vector<float>& input,
 
         opencl_context.m_pinnedOutBuffer_pol = cl::Buffer(
             m_opencl.m_context,
-            CL_MEM_WRITE_ONLY | CL_MEM_ALLOC_HOST_PTR, MAX_BATCH * finalSize_pol);
+            CL_MEM_WRITE_ONLY | CL_MEM_ALLOC_HOST_PTR, getOpenCL().m_batch_size * finalSize_pol);
         opencl_context.m_pinnedOutBuffer_val = cl::Buffer(
             m_opencl.m_context,
-            CL_MEM_WRITE_ONLY | CL_MEM_ALLOC_HOST_PTR, MAX_BATCH * finalSize_val);
+            CL_MEM_WRITE_ONLY | CL_MEM_ALLOC_HOST_PTR, getOpenCL().m_batch_size * finalSize_val);
 
         opencl_context.m_buffers_allocated = true;
     }
@@ -189,11 +190,10 @@ void OpenCL_Network<net_t>::forward(const std::vector<float>& input,
     cl::Buffer & MBuffer = opencl_context.m_MBuffer;
     cl::CommandQueue & queue = opencl_context.m_commandqueue;
 
-    std::vector<net_t> net_t_input(input.size());
-    std::copy(begin(input), end(input), begin(net_t_input));
+    std::unique_lock<std::mutex> enqueue_lock(m_enqueue_mutex);
 
     const auto inSize = sizeof(net_t) * input.size();
-    queue.enqueueWriteBuffer(inBuffer, CL_FALSE, 0, inSize, net_t_input.data());
+    queue.enqueueWriteBuffer(inBuffer, CL_FALSE, 0, inSize, input.data());
 
     // Fused in_out transformation kernel is slower with big batch_sizes than
     // calling out and in transformations separately.
@@ -292,12 +292,16 @@ void OpenCL_Network<net_t>::forward(const std::vector<float>& input,
         opencl_context.m_pinnedOutBuffer_val, CL_FALSE,
         CL_MAP_READ, 0, batch_size * finalSize_val);
 
-    {
-        // Finish call is usually a busy wait. When using multiple threads
-        // use the lock to avoid busy waiting with all threads.
-        std::lock_guard<std::mutex> lock(m_queue_finish_mutex);
-        queue.finish();
-    }
+    //std::unique_lock<std::mutex> enqueue_lock(m_enqueue_mutex);
+    enqueue_lock.unlock();
+    //std::unique_lock<std::mutex> finish_lock(m_queue_finish_mutex);
+     enqueue_lock.lock();
+    queue.finish();
+    //finish_lock.unlock();
+     enqueue_lock.unlock();
+    
+    if (--m_occupied == 0) idle_count++; 
+    cv.notify_all();
 
     auto polptr = static_cast<net_t*>(pinnedOutBufferHost_pol);
     auto valptr = static_cast<net_t*>(pinnedOutBufferHost_val);
@@ -782,7 +786,8 @@ OpenCL<net_t>::OpenCL(int gpu, bool silent) {
 }
 
 template <typename net_t>
-void OpenCL<net_t>::initialize(const int channels) {
+void OpenCL<net_t>::initialize(const int channels, int batch_size) {
+    m_batch_size = batch_size;
     // Make program of the source code in the context
     try {
         m_program = cl::Program(m_context,
@@ -798,7 +803,7 @@ void OpenCL<net_t>::initialize(const int channels) {
 
     auto t = Tuner<net_t>(*this, m_context, m_device);
     auto sgemm_tuners =
-        t.load_sgemm_tuners(channels, WINOGRAD_P, channels, WINOGRAD_TILE);
+        t.load_sgemm_tuners(channels, batch_size * WINOGRAD_P, channels, WINOGRAD_TILE);
 
     // Some NVIDIA drivers are buggy and will fail to compile the rest of the
     // kernels after a tuning run.

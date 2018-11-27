@@ -92,12 +92,19 @@ void UCTNode::dirichlet_noise(float epsilon, float alpha) {
         v /= sample_sum;
     }
 
+    std::vector<UCTNode*> m_children_ptrs;
     child_cnt = 0;
     for (auto& child : m_children) {
         auto policy = child->get_policy();
         auto eta_a = dirichlet_vector[child_cnt++];
         policy = policy * (1 - epsilon) + epsilon * eta_a;
         child->set_policy(policy);
+        m_children_ptrs.emplace_back(child.get());
+    }
+    std::stable_sort(rbegin(m_children_ptrs), rend(m_children_ptrs), 
+        [](UCTNode* a, UCTNode* b) { return a->get_policy() < b->get_policy(); });
+    for (auto i = 0; i < m_children.size(); i++) {
+        m_children[i].from_ptr(m_children_ptrs[i]);
     }
 }
 
@@ -180,18 +187,8 @@ void UCTNode::inflate_all_children() {
 void UCTNode::prepare_root_node(Network & network, int color,
                                 std::atomic<int>& nodes,
                                 GameState& root_state) {
-    float root_eval;
-    const auto had_children = has_children();
-    if (expandable()) {
-        create_children(network, nodes, root_state, root_eval);
-    }
-    if (had_children) {
-        root_eval = get_net_eval(color);
-    } else {
-        update(root_eval);
-        root_eval = (color == FastBoard::BLACK ? root_eval : 1.0f - root_eval);
-    }
-    Utils::myprintf("NN eval=%f\n", root_eval);
+    float root_eval = get_eval(color);
+    Utils::myprintf("root eval=%f\n", root_eval);
 
     // There are a lot of special cases where code assumes
     // all children of the root are inflated, so do that.

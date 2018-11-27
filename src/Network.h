@@ -64,6 +64,10 @@ public:
     using Netresult = NNCache::Netresult;
 
     Netresult get_output(const GameState* const state,
+        const Ensemble ensemble,
+        const int symmetry = -1,
+        const bool skip_cache = false);
+    std::pair<Netresult_ptr, int> get_output0(const GameState* const state,
                          const Ensemble ensemble,
                          const int symmetry = -1,
                          const bool skip_cache = false,
@@ -92,6 +96,17 @@ public:
     size_t get_estimated_size();
     size_t get_estimated_cache_size();
     void nncache_resize(int max_count);
+    void nncache_dump_stats() { m_nncache.dump_stats(); }
+    void set_search(UCTSearch* search) { m_forward->m_search = search; m_forward->m_network = this; }
+    void process_output(std::vector<float>& policy_data,
+        std::vector<float>& value_data,
+        const int tomove,
+        const int symmetry,
+        Netresult_ptr result);
+
+    // Symmetry helper
+    static std::array<std::array<int, NUM_INTERSECTIONS>,
+        Network::NUM_SYMMETRIES> symmetry_nn_idx_table;
 
 private:
     std::pair<int, int> load_v1_network(std::istream& wtfile);
@@ -118,12 +133,15 @@ private:
                                const std::vector<float>& V,
                                std::vector<float>& M, const int C, const int K);
     Netresult get_output_internal(const GameState* const state,
-                                  const int symmetry, bool selfcheck = false);
+        const int symmetry, bool selfcheck = false);
+    //Netresult_ptr get_output_internal0(const GameState* const state,
+    //                                   const int symmetry, bool selfcheck = false);
     static void fill_input_plane_pair(const FullBoard& board,
                                       std::vector<float>::iterator black,
                                       std::vector<float>::iterator white,
                                       const int symmetry);
-    bool probe_cache(const GameState* const state, Network::Netresult& result);
+    // bool probe_cache(const GameState* const state, Network::Netresult& result);
+    std::pair<Netresult_ptr, int> probe_cache0(const GameState* const state);
     std::unique_ptr<ForwardPipe>&& init_net(int channels,
                                             std::unique_ptr<ForwardPipe>&& pipe);
 #ifdef USE_HALF

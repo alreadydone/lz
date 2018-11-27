@@ -33,35 +33,23 @@
 #include "UCTNode.h"
 #include "Network.h"
 
-
-class SearchResult {
-public:
-    SearchResult() = default;
-    bool valid() const { return m_valid;  }
-    float eval() const { return m_eval;  }
-    static SearchResult from_eval(float eval) {
-        return SearchResult(eval);
-    }
-    static SearchResult from_score(float board_score) {
-        if (board_score > 0.0f) {
-            return SearchResult(1.0f);
-        } else if (board_score < 0.0f) {
-            return SearchResult(0.0f);
-        } else {
-            return SearchResult(0.5f);
-        }
-    }
-private:
-    explicit SearchResult(float eval)
-        : m_valid(true), m_eval(eval) {}
-    bool m_valid{false};
-    float m_eval{0.0f};
-};
-
 namespace TimeManagement {
     enum enabled_t {
         AUTO = -1, OFF = 0, ON = 1, FAST = 2, NO_PRUNING = 3
     };
+};
+
+struct BackupData {
+    struct NodeFactor {
+        UCTNode* node;
+        float factor;
+        NodeFactor(UCTNode* node, float factor) : node(node), factor(factor) {}
+    };
+    float eval{ -1.0f };
+    std::vector<NodeFactor> path;
+    Netresult_ptr netresult;
+    int symmetry;
+    std::unique_ptr<GameState> state;
 };
 
 class UCTSearch {
@@ -103,7 +91,9 @@ public:
     void ponder();
     bool is_running() const;
     void increment_playouts();
-    SearchResult play_simulation(GameState& currstate, UCTNode* const node);
+    void play_simulation(std::unique_ptr<GameState> currstate, UCTNode* node, int thread_num);
+    void backup();
+    int m_positions{0};
 
 private:
     float get_min_psa_ratio() const;
@@ -134,17 +124,26 @@ private:
     std::list<Utils::ThreadGroup> m_delete_futures;
 
     Network & m_network;
+
+    std::mutex m_mutex;
+    std::condition_variable m_cv;
+    std::queue<std::unique_ptr<BackupData>> backup_queue;
+    size_t max_queue_length;
+    void backup(BackupData& bd);
+    void failed_simulation(BackupData& bd);
+    int m_failed_simulations{ 0 };
 };
 
 class UCTWorker {
 public:
-    UCTWorker(GameState & state, UCTSearch * search, UCTNode * root)
-      : m_rootstate(state), m_search(search), m_root(root) {}
+    UCTWorker(GameState & state, UCTSearch * search, UCTNode * root, int thread_num)
+      : m_rootstate(state), m_search(search), m_root(root), m_thread_num(thread_num) {}
     void operator()();
 private:
     GameState & m_rootstate;
     UCTSearch * m_search;
     UCTNode * m_root;
+    int m_thread_num;
 };
 
 #endif

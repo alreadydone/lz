@@ -158,9 +158,10 @@ void Training::record(Network & network, GameState& state, UCTNode& root) {
     step.to_move = state.board.get_to_move();
     step.planes = get_planes(&state);
 
-    auto result =
-        network.get_output(&state, Network::Ensemble::DIRECT, 0);
-    step.net_winrate = result.winrate;
+    //auto result =
+    //    network.get_output(&state, Network::Ensemble::DIRECT, 0);
+    //step.net_winrate = result.winrate;
+    step.net_winrate = root.get_net_eval(state.get_to_move());
 
     const auto& best_node = root.get_best_root_child(step.to_move);
     step.root_uct_winrate = root.get_eval(step.to_move);

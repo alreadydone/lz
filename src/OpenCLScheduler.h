@@ -22,12 +22,13 @@
 
 #include <list>
 #include <vector>
+#include <thread>
 
 #include "SMP.h"
 #include "ForwardPipe.h"
 #include "OpenCL.h"
 #include "ThreadPool.h"
-
+extern int cfg_batch_size;
 
 template <typename net_t>
 class OpenCLScheduler : public ForwardPipe {
@@ -37,26 +38,71 @@ class OpenCLScheduler : public ForwardPipe {
         OpenCLContext context;
         ContextPoolEntry(size_t index) : net_index(index) {}
     };
+    class ForwardQueueEntry {
+    public:
+      std::mutex mutex;
+      std::condition_variable cv;
+      const std::vector<float>& in;
+      std::vector<float>& out_p;
+      std::vector<float>& out_v;
+      ForwardQueueEntry(const std::vector<float>& input,
+                        std::vector<float>& output_pol,
+                        std::vector<float>& output_val) : in(input), out_p(output_pol), out_v(output_val)
+        {}
+    };
+    class ForwardQueueEntry0 {
+    public:
+        std::unique_ptr<const std::vector<float>> in;
+        const int tomove;
+        const int symmetry;
+        Netresult_ptr result;
+        ForwardQueueEntry0(std::unique_ptr<const std::vector<float>> input,
+                           const int tomove,
+                           const int symmetry,
+                           Netresult_ptr result) : in(std::move(input)), tomove(tomove), symmetry(symmetry), result(result)
+        {}
+    };
 public:
+    virtual ~OpenCLScheduler();
     OpenCLScheduler();
+
     virtual void initialize(const int channels);
     virtual void forward(const std::vector<float>& input,
                          std::vector<float>& output_pol,
                          std::vector<float>& output_val);
+    virtual void forward0(std::unique_ptr<const std::vector<float>> input,
+                          const int tomove,
+                          const int symmetry,
+                          Netresult_ptr result);
     virtual bool needs_autodetect();
     virtual void push_weights(unsigned int filter_size,
                               unsigned int channels,
                               unsigned int outputs,
                               std::shared_ptr<const ForwardPipeWeights> weights);
 private:
+    std::atomic<bool> m_running{true};
     std::vector<std::unique_ptr<OpenCL_Network<net_t>>> m_networks;
     std::vector<std::unique_ptr<OpenCL<net_t>>> m_opencl;
 
-    using ContextPoolQueue = std::list<std::shared_ptr<ContextPoolEntry>>;
-    std::vector<ContextPoolQueue> m_context_pool;
+    std::mutex m_mutex;
+    std::condition_variable m_cv;
+    std::condition_variable m_cv0;
 
-    SMP::Mutex m_context_pool_mutex;
+    // start with 10 milliseconds : lock protected
+    int m_waittime{10};
+    
+    // set to true when single (non-batch) eval is in progress
+    std::atomic<bool> m_single_eval_in_progress{false};
 
+    std::list<std::shared_ptr<ForwardQueueEntry>> m_forward_queue;
+    std::list<std::unique_ptr<ForwardQueueEntry0>> m_forward_queue0;
+    std::atomic<int> m_max_queue_size;
+
+    std::list<std::thread> m_worker_threads;
+    std::vector<std::atomic<int>*> batch_stats;
+    std::vector<std::atomic<int>*> pickup_stats;
+
+    void batch_worker(const size_t gnum, const size_t i);
     void push_input_convolution(unsigned int filter_size,
                                 unsigned int channels,
                                 unsigned int outputs,

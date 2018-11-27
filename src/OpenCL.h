@@ -30,6 +30,7 @@
 #include <string>
 #include <vector>
 #include <mutex>
+#include <condition_variable>
 #include <cassert>
 
 #include "Tuner.h"
@@ -73,6 +74,8 @@ private:
 template <typename net_t>
 class OpenCL_Network {
 public:
+    std::atomic<int> m_occupied{0};
+    std::atomic<int> idle_count{0};
     OpenCL_Network(OpenCL<net_t> & opencl) : m_opencl(opencl) {}
     OpenCL<net_t> & getOpenCL() {
         return m_opencl;
@@ -134,10 +137,11 @@ public:
         return m_layers.size();
     }
 
-    void forward(const std::vector<float>& input,
+    void forward(const std::vector<net_t>& input,
             std::vector<float>& output_pol,
             std::vector<float>& output_val,
             OpenCLContext & opencl_context,
+            std::condition_variable& cv,
             const int batch_size = 1);
 
 private:
@@ -174,6 +178,7 @@ private:
     // because queue.finish() is a busy wait and having a lot of threads
     // waiting here is counterproductive CPU-wise.  At least std::mutex
     // isn't busy wait so it should be better.
+    std::mutex m_enqueue_mutex;
     std::mutex m_queue_finish_mutex;
     std::vector<Layer> m_layers;
 };
@@ -184,7 +189,8 @@ class OpenCL {
     friend class Tuner<net_t>;
 public:
     OpenCL(int gpu, bool silent = false);
-    void initialize(const int channels);
+
+    void initialize(const int channels, int batch_size = 1);
     void ensure_context_initialized(OpenCLContext & opencl_context);
     std::string get_device_name();
     bool has_fp16_compute();
@@ -197,6 +203,7 @@ private:
     void tune_sgemm();
     void process_tuners(std::string tuners);
 
+    int m_batch_size = 1;
     cl::Program m_program;
     std::string m_cl_args;
 

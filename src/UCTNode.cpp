@@ -47,38 +47,28 @@ bool UCTNode::first_visit() const {
     return m_visits == 0;
 }
 
-bool UCTNode::create_children(Network & network,
-                              std::atomic<int>& nodecount,
-                              GameState& state,
-                              float& eval,
-                              float min_psa_ratio) {
-    // no successors in final state
-    if (state.get_passes() >= 2) {
-        return false;
-    }
+std::array<std::array<int, NUM_INTERSECTIONS>,
+    Network::NUM_SYMMETRIES> Network::symmetry_nn_idx_table;
 
-    // acquire the lock
-    if (!acquire_expanding()) {
-        return false;
-    }
+void UCTNode::create_children(Network::Netresult& raw_netlist0,
+                               int symmetry,
+                               std::atomic<int>& nodecount,
+                               GameState& state, 
+                               float min_psa_ratio) {
 
-    // can we actually expand?
-    if (!expandable(min_psa_ratio)) {
-        expand_done();
-        return false;
-    }
-
-    const auto raw_netlist = network.get_output(
-        &state, Network::Ensemble::RANDOM_SYMMETRY);
-
-    // DCNN returns winrate as side to move
-    m_net_eval = raw_netlist.winrate;
+    Network::Netresult raw_netlist;
+    m_net_eval = raw_netlist.winrate = raw_netlist0.winrate;
     const auto to_move = state.board.get_to_move();
     // our search functions evaluate from black's point of view
     if (state.board.white_to_move()) {
         m_net_eval = 1.0f - m_net_eval;
     }
-    eval = m_net_eval;
+
+    for (auto idx = size_t{ 0 }; idx < NUM_INTERSECTIONS; ++idx) {
+        const auto sym_idx = Network::symmetry_nn_idx_table[symmetry][idx];
+        raw_netlist.policy[idx] = raw_netlist0.policy[sym_idx];
+    }
+    raw_netlist.policy_pass = raw_netlist0.policy_pass;
 
     std::vector<Network::PolicyVertexPair> nodelist;
 
@@ -100,7 +90,8 @@ bool UCTNode::create_children(Network & network,
         for (auto& node : nodelist) {
             node.first /= legal_sum;
         }
-    } else {
+    }
+    else {
         // This can happen with new randomized nets.
         auto uniform_prob = 1.0f / nodelist.size();
         for (auto& node : nodelist) {
@@ -109,8 +100,7 @@ bool UCTNode::create_children(Network & network,
     }
 
     link_nodelist(nodecount, nodelist, min_psa_ratio);
-    expand_done();
-    return true;
+    return;
 }
 
 void UCTNode::link_nodelist(std::atomic<int>& nodecount,
@@ -142,6 +132,7 @@ void UCTNode::link_nodelist(std::atomic<int>& nodecount,
     for (const auto& node : nodelist) {
         if (node.first < new_min_psa) {
             skipped_children = true;
+            break;
         } else if (node.first < old_min_psa) {
             m_children.emplace_back(node.second, node.first);
             ++nodecount;
@@ -168,9 +159,11 @@ void UCTNode::virtual_loss_undo() {
     m_virtual_loss -= VIRTUAL_LOSS_COUNT;
 }
 
-void UCTNode::update(float eval) {
-    m_visits++;
-    accumulate_eval(eval);
+void UCTNode::update(float eval, float factor, float sel_factor) {
+    atomic_add(m_visits, double(factor));
+    atomic_add(m_blackevals, double(eval*factor));
+    atomic_add(m_sel_visits, double(sel_factor));
+    virtual_loss_undo();
 }
 
 bool UCTNode::has_children() const {
@@ -196,12 +189,13 @@ void UCTNode::set_policy(float policy) {
     m_policy = policy;
 }
 
-int UCTNode::get_visits() const {
-    return m_visits;
+double UCTNode::get_visits(visit_type type) const {
+    if (type == SEL) { return m_sel_visits; }
+    else { return m_visits; }
 }
 
 float UCTNode::get_raw_eval(int tomove, int virtual_loss) const {
-    auto visits = get_visits() + virtual_loss;
+    auto visits = get_visits(WR) + virtual_loss;
     assert(visits > 0);
     auto blackeval = get_blackevals();
     if (tomove == FastBoard::WHITE) {
@@ -236,57 +230,149 @@ void UCTNode::accumulate_eval(float eval) {
     atomic_add(m_blackevals, double(eval));
 }
 
-UCTNode* UCTNode::uct_select_child(int color, bool is_root) {
+float uct_value(float q, float p, double v, double v_total) {
+    return q + cfg_puct * p * sqrt(v_total) / (1.0 + v);
+}
+
+double binary_search_visits(std::function<double(double)> f, double v_init) {
+    auto low = 0.0;
+    auto high = v_init;
+    while (f(high) < 0.0) { low = high; high = 2.0 * high; }
+    while (true) {
+        auto mid = (low + high) / 2.0;
+        auto fmid = f(mid);
+        if (abs(fmid) < 0.000001) { return mid; }
+        if (fmid < 0.0) { low = mid; }
+        else { high = mid; }
+    }
+}
+
+float factor(float q_c, float p_c, double v_c, float q_a, float p_a, double v_a, double v_total) {
+    auto v_additional = binary_search_visits(
+        [q_c, p_c, v_c, q_a, p_a, v_a, v_total](double x) {
+        return uct_value(q_c, p_c, v_c, v_total + x) - uct_value(q_a, p_a, v_a + x, v_total + x); },
+        1.0 + v_total);
+
+    auto factor_ = v_total / (v_total + v_additional);
+    if (factor_ < 0.0) {
+        myprintf("chosen: %f, actual best: %f policy\n", p_c, p_a);
+        myprintf("chosen: %f, actual best: %f visits\n", v_c, v_a);
+        myprintf("chosen: %f, actual best: %f Q\n", q_c, q_a);
+        myprintf("chosen: %f, actual best: %f Q+U before addiaional visits\n",
+            uct_value(q_c, p_c, v_c, v_total),
+            uct_value(q_a, p_a, v_a, v_total));
+        myprintf("chosen: %f, actual best: %f Q+U after %f additional visits\n",
+            uct_value(q_c, p_c, v_c, v_total + v_additional),
+            uct_value(q_a, p_a, v_a + v_additional, v_total + v_additional),
+            v_additional);
+        myprintf("parentvisits: %f, factor: %f\n\n", v_total, factor_);
+    }
+
+    return factor_;
+}
+
+std::pair<UCTNode*, float> UCTNode::uct_select_child(int color, bool is_root) {
     wait_expanded();
 
     // Count parentvisits manually to avoid issues with transpositions.
     auto total_visited_policy = 0.0f;
-    auto parentvisits = size_t{0};
+    auto parentvisits = 0.0;
     for (const auto& child : m_children) {
         if (child.valid()) {
             parentvisits += child.get_visits();
-            if (child.get_visits() > 0) {
+            if (child.get_visits(WR) > 0.0) {
                 total_visited_policy += child.get_policy();
+            }
+            else {
+                break; // children are ordered by policy (initially) or by visits (NodeComp), so this is good.
             }
         }
     }
-
-    const auto numerator = std::sqrt(double(parentvisits));
-    const auto fpu_reduction = (is_root ? cfg_fpu_root_reduction : cfg_fpu_reduction) * std::sqrt(total_visited_policy);
-    // Estimated eval for unknown nodes = original parent NN eval - reduction
-    const auto fpu_eval = get_net_eval(color) - fpu_reduction;
+    auto numerator = std::sqrt(parentvisits);
+    auto parent_eval = get_visits(WR) > 0.0 ? get_raw_eval(color) : get_net_eval(color);
 
     auto best = static_cast<UCTNodePointer*>(nullptr);
+    auto actual_best = best;
     auto best_value = std::numeric_limits<double>::lowest();
+    auto best_actual_value = best_value;
+    auto actual_value_of_best = best_value;
+    auto q_of_best = 0.0;
+    auto q_of_actual_best = 0.0;
+    total_visited_policy = 0.0f;
+    auto policy_of_best = 0.0f;
+    auto policy_of_actual_best = 0.0f;
+    auto visits_of_best = 0.0;
+    auto visits_of_actual_best = 0.0;
 
     for (auto& child : m_children) {
         if (!child.active()) {
             continue;
         }
 
-        auto winrate = fpu_eval;
+        auto winrate = parent_eval;
+        // Estimated eval for unknown nodes = parent eval - reduction
+        // Lower the expected eval for moves that are likely not the best.
+        // Do not do this if we have introduced noise at this node exactly
+        // to explore more.
+        if (!cfg_noise) {
+            winrate -= (is_root ? cfg_fpu_root_reduction : cfg_fpu_reduction) * std::sqrt(total_visited_policy);
+        }
+        auto actual_winrate = winrate;
+        bool has_visits = false;
+        if (child.get_visits(WR) > 0.0) {
+            winrate = child.get_eval(color);
+            actual_winrate = child.get_raw_eval(color);
+            has_visits = true;
+        }
+        auto psa = child.get_policy();
+        total_visited_policy += psa;
+        auto denom = 1.0 + child.get_visits();
+        auto puct = cfg_puct * psa * (numerator / denom);
+        auto value = winrate + puct;
+        auto actual_value = actual_winrate + puct;
+        /*
         if (child.is_inflated() && child->m_expand_state.load() == ExpandState::EXPANDING) {
             // Someone else is expanding this node, never select it
             // if we can avoid so, because we'd block on it.
-            winrate = -1.0f - fpu_reduction;
-        } else if (child.get_visits() > 0) {
-            winrate = child.get_eval(color);
+            value = -1.0f - cfg_fpu_reduction;
         }
-        const auto psa = child.get_policy();
-        const auto denom = 1.0 + child.get_visits();
-        const auto puct = cfg_puct * psa * (numerator / denom);
-        const auto value = winrate + puct;
-        assert(value > std::numeric_limits<double>::lowest());
-
+        */
+        
+        if (actual_value > best_actual_value) {
+            best_actual_value = actual_value;
+            q_of_actual_best = actual_winrate;
+            policy_of_actual_best = psa;
+            visits_of_actual_best = child.get_visits();
+            actual_best = &child;
+        }
+        auto to_expand = false;
         if (value > best_value) {
-            best_value = value;
+            if (!has_visits) {
+                child.inflate();
+                if (child->acquire_expanding()) {
+                    to_expand = true;
+                }
+                else {
+                    continue;
+                }
+            }
             best = &child;
+            best_value = value;
+            actual_value_of_best = actual_value;
+            q_of_best = actual_winrate;
+            policy_of_best = psa;
+            visits_of_best = child.get_visits();
+            if (to_expand) { break; }
         }
     }
 
-    assert(best != nullptr);
-    best->inflate();
-    return best->get();
+    //assert(best != nullptr);
+    if (best == nullptr) return std::make_pair(nullptr, 1.0f);
+    //best->inflate();
+    if (best == actual_best || !cfg_frac_backup) return std::make_pair(best->get(), 1.0f);
+    return std::make_pair(best->get(), factor(q_of_best, policy_of_best, visits_of_best,
+                                              q_of_actual_best, policy_of_actual_best, visits_of_actual_best,
+                                              parentvisits));
 }
 
 class NodeComp : public std::binary_function<UCTNodePointer&,

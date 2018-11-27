@@ -22,6 +22,7 @@
 #include "config.h"
 
 #include <array>
+#include <atomic>
 #include <deque>
 #include <memory>
 #include <mutex>
@@ -46,15 +47,10 @@ public:
         // winrate
         float winrate;
 
-        Netresult() : policy_pass(0.0f), winrate(0.0f) {
+        Netresult() : policy_pass(0.0f), winrate(-1.0f) {
             policy.fill(0.0f);
         }
     };
-
-    static constexpr size_t ENTRY_SIZE =
-          sizeof(Netresult)
-        + sizeof(std::uint64_t)
-        + sizeof(std::unique_ptr<Netresult>);
 
     NNCache(int size = MAX_CACHE_COUNT);  // ~ 208MiB
 
@@ -63,13 +59,6 @@ public:
 
     // Resize NNCache
     void resize(int size);
-
-    // Try and find an existing entry.
-    bool lookup(std::uint64_t hash, Netresult & result);
-
-    // Insert a new entry.
-    void insert(std::uint64_t hash,
-                const Netresult& result);
 
     // Return the hit rate ratio.
     std::pair<int, int> hit_rate() const {
@@ -80,10 +69,24 @@ public:
 
     // Return the estimated memory consumption of the cache.
     size_t get_estimated_size();
-private:
 
+    struct Entry {
+        //Entry(const Netresult& r)
+        //    : result(r) {}
+        std::atomic<bool> ready{false};
+        std::atomic<bool> forwarded{false};
+        Netresult result;  // ~ 1.4KiB
+    };
+
+    static constexpr size_t ENTRY_SIZE =
+        sizeof(Entry)
+        + sizeof(std::uint64_t)
+        + sizeof(std::shared_ptr<Entry>);
+
+    std::shared_ptr<Entry> lookup_and_insert(std::uint64_t hash, bool insert, bool lookup = true);
     std::mutex m_mutex;
-
+private:
+    
     size_t m_size;
 
     // Statistics
@@ -91,16 +94,12 @@ private:
     int m_lookups{0};
     int m_inserts{0};
 
-    struct Entry {
-        Entry(const Netresult& r)
-            : result(r) {}
-        Netresult result;  // ~ 1.4KiB
-    };
-
     // Map from hash to {features, result}
-    std::unordered_map<std::uint64_t, std::unique_ptr<const Entry>> m_cache;
+    std::unordered_map<std::uint64_t, std::shared_ptr<Entry>> m_cache;
     // Order entries were added to the map.
     std::deque<size_t> m_order;
 };
+
+using Netresult_ptr = std::shared_ptr<NNCache::Entry>;
 
 #endif

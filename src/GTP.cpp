@@ -133,7 +133,7 @@ void GTP::setup_default_parameters() {
     cfg_precision = precision_t::HALF;
 #endif
 #endif
-    cfg_puct = 0.8f;
+    cfg_puct = 1.25f;
     cfg_softmax_temp = 1.0f;
     cfg_fpu_reduction = 0.25f;
     // see UCTSearch::should_resign
@@ -644,7 +644,7 @@ void GTP::execute(GameState & game, const std::string& xinput) {
         std::string vertex = game.move_to_text(move);
         myprintf("%s\n", vertex.c_str());
         return;
-    } else if (command.find("heatmap") == 0) {
+	} else if (command.find("heatmap") == 0) {
         std::istringstream cmdstream(command);
         std::string tmp;
         std::string symmetry;

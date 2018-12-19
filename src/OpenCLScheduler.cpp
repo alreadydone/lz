@@ -168,8 +168,11 @@ void OpenCLScheduler<net_t>::push_input_convolution(
     unsigned int channels,
     unsigned int outputs,
     const std::vector<float>& weights,
+    const std::vector<float>& biases,
     const std::vector<float>& means,
-    const std::vector<float>& variances) {
+    const std::vector<float>& variances,
+    const std::vector<float>& gammas,
+    const std::vector<float>& betas) {
 
     for (const auto& opencl_net : m_networks) {
         const auto tuners = opencl_net->getOpenCL().get_sgemm_tuners();
@@ -186,7 +189,9 @@ void OpenCLScheduler<net_t>::push_input_convolution(
                                            m_ceil, k_ceil);
         opencl_net->push_input_convolution(
             filter_size, channels, outputs,
-            Upad, from_float(means), from_float(variances)
+            Upad, from_float(biases),
+            from_float(means), from_float(variances),
+            from_float(gammas), from_float(betas)
         );
     }
 }
@@ -196,11 +201,17 @@ void OpenCLScheduler<net_t>::push_residual(unsigned int filter_size,
                                            unsigned int channels,
                                            unsigned int outputs,
                                            const std::vector<float>& weights_1,
+                                           const std::vector<float>& biases_1,
                                            const std::vector<float>& means_1,
                                            const std::vector<float>& variances_1,
+                                           const std::vector<float>& gammas_1,
+                                           const std::vector<float>& betas_1,
                                            const std::vector<float>& weights_2,
+                                           const std::vector<float>& biases_2,
                                            const std::vector<float>& means_2,
-                                           const std::vector<float>& variances_2) {
+                                           const std::vector<float>& variances_2,
+                                           const std::vector<float>& gammas_2,
+                                           const std::vector<float>& betas_2) {
     for (const auto& opencl_net : m_networks) {
         const auto tuners = opencl_net->getOpenCL().get_sgemm_tuners();
 
@@ -216,11 +227,17 @@ void OpenCLScheduler<net_t>::push_residual(unsigned int filter_size,
                                             m_ceil, m_ceil);
         opencl_net->push_residual(filter_size, channels, outputs,
                                   Upad1,
+                                  from_float(biases_1),
                                   from_float(means_1),
                                   from_float(variances_1),
+                                  from_float(gammas_1),
+                                  from_float(betas_1),
                                   Upad2,
+                                  from_float(biases_2),
                                   from_float(means_2),
-                                  from_float(variances_2));
+                                  from_float(variances_2),
+                                  from_float(gammas_2),
+                                  from_float(betas_2));
     }
 }
 
@@ -247,8 +264,11 @@ void OpenCLScheduler<net_t>::push_weights(
     // Winograd filter transformation changes filter size to 4x4
     push_input_convolution(filter_size, channels, outputs,
                            weights->m_conv_weights[weight_index],
+                           weights->m_conv_biases[weight_index],
                            weights->m_batchnorm_means[weight_index],
-                           weights->m_batchnorm_stddevs[weight_index]);
+                           weights->m_batchnorm_stddevs[weight_index],
+                           weights->m_batchnorm_gammas[weight_index],
+                           weights->m_batchnorm_betas[weight_index]);
     weight_index++;
 
     // residual blocks : except the first entry,
@@ -256,11 +276,17 @@ void OpenCLScheduler<net_t>::push_weights(
     for (auto i = size_t{0}; i < weights->m_conv_weights.size()/2; i++) {
         push_residual(filter_size, outputs, outputs,
                       weights->m_conv_weights[weight_index],
+                      weights->m_conv_biases[weight_index],
                       weights->m_batchnorm_means[weight_index],
                       weights->m_batchnorm_stddevs[weight_index],
+                      weights->m_batchnorm_gammas[weight_index],
+                      weights->m_batchnorm_betas[weight_index],
                       weights->m_conv_weights[weight_index + 1],
+                      weights->m_conv_biases[weight_index + 1],
                       weights->m_batchnorm_means[weight_index + 1],
-                      weights->m_batchnorm_stddevs[weight_index + 1]);
+                      weights->m_batchnorm_stddevs[weight_index + 1],
+                      weights->m_batchnorm_gammas[weight_index + 1],
+                      weights->m_batchnorm_betas[weight_index + 1]);
         weight_index += 2;
     }
 

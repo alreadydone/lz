@@ -107,18 +107,27 @@ private:
                                 unsigned int channels,
                                 unsigned int outputs,
                                 const std::vector<float>& weights,
+                                const std::vector<float>& biases,
                                 const std::vector<float>& means,
-                                const std::vector<float>& variances);
+                                const std::vector<float>& variances,
+                                const std::vector<float>& gammas,
+                                const std::vector<float>& betas);
 
     void push_residual(unsigned int filter_size,
                        unsigned int channels,
                        unsigned int outputs,
                        const std::vector<float>& weights_1,
+                       const std::vector<float>& biases_1,
                        const std::vector<float>& means_1,
                        const std::vector<float>& variances_1,
+                       const std::vector<float>& gammas_1,
+                       const std::vector<float>& betas_1,
                        const std::vector<float>& weights_2,
+                       const std::vector<float>& biases_2,
                        const std::vector<float>& means_2,
-                       const std::vector<float>& variances_2);
+                       const std::vector<float>& variances_2,
+                       const std::vector<float>& gammas_2,
+                       const std::vector<float>& betas_2);
 
     void push_convolve(unsigned int filter_size,
                        unsigned int channels,

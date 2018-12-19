@@ -64,6 +64,7 @@ private:
     cl::Kernel m_out_transform_bn_in_kernel;
     cl::Buffer m_inBuffer;
     cl::Buffer m_inBuffer2;
+    cl::Buffer m_inBufferNoBN;
     cl::Buffer m_VBuffer;
     cl::Buffer m_MBuffer;
     cl::Buffer m_pinnedOutBuffer_pol;
@@ -85,12 +86,18 @@ public:
                        unsigned int channels,
                        unsigned int outputs,
                        const std::vector<net_t>& weights,
+                       const std::vector<net_t>& biases,
                        const std::vector<net_t>& means,
-                       const std::vector<net_t>& variances) {
+                       const std::vector<net_t>& variances,
+                       const std::vector<net_t>& gammas,
+                       const std::vector<net_t>& betas) {
         size_t layer = get_layer_count();
         push_weights(layer, weights);
+        push_weights(layer, biases);
         push_weights(layer, means);
         push_weights(layer, variances);
+        push_weights(layer, gammas);
+        push_weights(layer, betas);
         m_layers[layer].is_input_convolution = true;
         m_layers[layer].outputs = outputs;
         m_layers[layer].filter_size = filter_size;
@@ -101,18 +108,30 @@ public:
                        unsigned int channels,
                        unsigned int outputs,
                        const std::vector<net_t>& weights_1,
+                       const std::vector<net_t>& biases_1,
                        const std::vector<net_t>& means_1,
                        const std::vector<net_t>& variances_1,
+                       const std::vector<net_t>& gammas_1,
+                       const std::vector<net_t>& betas_1,
                        const std::vector<net_t>& weights_2,
+                       const std::vector<net_t>& biases_2,
                        const std::vector<net_t>& means_2,
-                       const std::vector<net_t>& variances_2) {
+                       const std::vector<net_t>& variances_2,
+                       const std::vector<net_t>& gammas_2,
+                       const std::vector<net_t>& betas_2) {
         size_t layer = get_layer_count();
         push_weights(layer, weights_1);
+        push_weights(layer, biases_1);
         push_weights(layer, means_1);
         push_weights(layer, variances_1);
+		push_weights(layer, gammas_1);
+        push_weights(layer, betas_1);
         push_weights(layer, weights_2);
+        push_weights(layer, biases_2);
         push_weights(layer, means_2);
         push_weights(layer, variances_2);
+        push_weights(layer, gammas_2);
+        push_weights(layer, betas_2);
         m_layers[layer].is_residual_block = true;
         m_layers[layer].outputs = outputs;
         m_layers[layer].filter_size = filter_size;
@@ -156,6 +175,7 @@ private:
                     int channels, int outputs,
                     cl::Buffer& bufferIn,
                     cl::Buffer& bufferOut,
+                    cl::Buffer* bufferOutNoBN,
                     cl::Buffer& bufferV,
                     cl::Buffer& bufferM, weight_slice_t weights,
                     cl::Buffer* bufferResidual,

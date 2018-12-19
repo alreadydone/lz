@@ -29,8 +29,8 @@ public:
     /*
         Initialize time control. Timing info is per GTP and in centiseconds
     */
-    TimeControl(int maintime = 60 * 60 * 100,
-                int byotime = 0, int byostones = 25,
+    TimeControl(int maintime = 0,
+                int byotime = 240 * 100, int byostones = 1,
                 int byoperiods = 0);
 
     void start(int color);

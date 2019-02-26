@@ -38,7 +38,8 @@ public:
     // to it to encourage other CPUs to explore other parts of the
     // search tree.
     static constexpr auto VIRTUAL_LOSS_COUNT = 3.0;
-    std::atomic<std::uint32_t> m_virtual_loss{0};
+    std::atomic<std::uint16_t> m_virtual_loss{0};
+    std::atomic<std::uint16_t> m_accumulated_vl{0};
     // Defined in UCTNode.cpp
     explicit UCTNode(int vertex, float policy);
     UCTNode() = delete;
@@ -69,9 +70,9 @@ public:
     float get_eval(int tomove) const;
     float get_raw_eval(int tomove, double virtual_loss = 0) const;
     float get_net_eval(int tomove) const;
-    void virtual_loss(uint32_t vl = 1);
-    void virtual_loss_undo(uint32_t vl = 1);
-    void update(float eval, uint32_t vl, float factor = 1.0f, float sel_factor = 1.0f);
+    void virtual_loss(uint16_t vl = 1);
+    void virtual_loss_undo(uint16_t vl = 1);
+    void update(float eval, uint16_t vl, float factor = 1.0f, float sel_factor = 1.0f);
 
     // Defined in UCTNodeRoot.cpp, only to be called on m_root in UCTSearch
     void randomize_first_proportionally();
@@ -92,7 +93,7 @@ public:
     };
 
     void acquire_reader();
-    void release_reader(uint32_t vl = 0, bool incr = false);
+    void release_reader(uint16_t vl = 0, bool incr = false);
     bool pre_acquire_writer();
     void acquire_writer();
     void release_writer();

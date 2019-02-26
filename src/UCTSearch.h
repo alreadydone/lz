@@ -49,7 +49,7 @@ struct BackupData {
     std::vector<NodeFactor> path;
     int symmetry;
     std::unique_ptr<GameState> state;
-    std::atomic<int>* pending_count;
+    std::atomic<int>* pending_counter;
     //int multiplicity{1};
 };
 
@@ -105,7 +105,7 @@ public:
     bool is_running() const;
     void increment_playouts();
     void play_simulation(std::unique_ptr<GameState> currstate, UCTNode* node, 
-        std::atomic<int>* pending_count, int gnum, int i);
+        std::atomic<int>* pending_counter, int gnum, int i);
     std::atomic<int> m_positions{0};
     std::atomic<bool> m_run{false};
     std::mutex m_mutex;
@@ -121,8 +121,8 @@ private:
     friend class UCTWorker;
 #ifdef ACCUM_DEBUG
     std::atomic<int> failed_simulations{0};
-    std::atomic<uint32_t> max_leaf_vl;
-    std::atomic<uint32_t> max_vl;
+    std::atomic<uint16_t> max_leaf_vl;
+    std::atomic<uint16_t> max_vl;
     std::atomic<int> pending_backups{0};
     std::atomic<int> max_pending_backups;
     std::atomic<int> pending_w_mult{0};
@@ -136,7 +136,7 @@ private:
     void release_reader();
     void acquire_writer();
     void release_writer();
-    std::atomic<int>* m_pending_count{nullptr};
+    std::atomic<int>* m_pending_counter{nullptr};
     GameState m_rootstate;
     GameState & m_gtpstate;
     std::unique_ptr<GameState> m_last_rootstate;
@@ -170,8 +170,8 @@ private:
 
     Network & m_network;
 
-    void backup(BackupData& bd, uint32_t vl);
-    void failed_simulation(BackupData& bd, uint32_t vl, bool incr = false);
+    void backup(BackupData& bd, uint16_t vl);
+    void failed_simulation(BackupData& bd, uint16_t vl, bool incr = false);
 };
 
 #endif

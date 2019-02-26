@@ -159,15 +159,15 @@ int UCTNode::get_move() const {
     return m_move;
 }
 
-void UCTNode::virtual_loss(uint32_t vl) {
+void UCTNode::virtual_loss(uint16_t vl) {
     m_virtual_loss += vl;
 }
 
-void UCTNode::virtual_loss_undo(uint32_t vl) {
+void UCTNode::virtual_loss_undo(uint16_t vl) {
     if (vl != 0) { m_virtual_loss -= vl; }
 }
 
-void UCTNode::update(float eval, uint32_t vl, float factor, float sel_factor) {
+void UCTNode::update(float eval, uint16_t vl, float factor, float sel_factor) {
     atomic_add(m_visits, double(factor));
     atomic_add(m_blackevals, double(eval*factor));
     //atomic_add(m_sel_visits, double(sel_factor));
@@ -342,7 +342,7 @@ std::pair<UCTNode*, float> UCTNode::uct_select_child(int color, bool is_root) {
         // Lower the expected eval for moves that are likely not the best.
         // Do not do this if we have introduced noise at this node exactly
         // to explore more.
-        if (child.is_inflated() && child.get()->m_lock >= 85 && child.get()->m_virtual_loss >= 48)
+        if (child.is_inflated() && child.get()->m_accumulated_vl >= 48)
             winrate = -1.0f;
         winrate -= (is_root? cfg_fpu_root_reduction : cfg_fpu_reduction) * std::sqrt(total_visited_policy);
 
@@ -530,7 +530,7 @@ void UCTNode::acquire_reader() {
     }
 }
 
-void UCTNode::release_reader(uint32_t vl, bool incr) {
+void UCTNode::release_reader(uint16_t vl, bool incr) {
     //myprintf("%d release\n", m_lock.load());
     if (incr) { virtual_loss(vl); }
     else { virtual_loss_undo(vl); }
@@ -585,6 +585,7 @@ UCTNode::Action UCTNode::get_action(bool is_root) {
             (m_visits == 0.0 || is_root || expandable(get_min_psa_ratio())) &&
             pre_acquire_writer()) {
             virtual_loss();
+            m_accumulated_vl++;
             return WRITE;
         }
         is_root = false;
@@ -594,9 +595,16 @@ UCTNode::Action UCTNode::get_action(bool is_root) {
         virtual_loss();
         if (has_children()) { while (m_visits == 0.0) {}; return READ; }
         else {
-            release_reader();
-            if (lock >= 85) { return FAIL; }
-            else { myprintf("No children due to low memory!\n"); return BACKUP; }
+            if (lock >= 85) {
+                m_accumulated_vl++;
+                release_reader();
+                return FAIL;
+            }
+            else {
+                myprintf("No children due to low memory!\n");
+                release_reader();
+                return BACKUP;
+            }
         }
     }
 }

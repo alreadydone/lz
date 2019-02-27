@@ -315,6 +315,8 @@ std::pair<UCTNode*, float> UCTNode::uct_select_child(int color, bool is_root) {
     auto policy_of_actual_best = 0.0f;
     auto visits_of_best = 0.0;
     auto visits_of_actual_best = 0.0;
+    auto num_children = m_children.size();
+    auto wt = std::min(1.0f, std::pow(float(parentvisits), cfg_exponent) / cfg_uniform_visits);
 
 #ifdef UCT_SOFTMAX
     auto accum = 0.0;
@@ -354,7 +356,8 @@ std::pair<UCTNode*, float> UCTNode::uct_select_child(int color, bool is_root) {
             actual_winrate = child.get_raw_eval(color);
         }
         auto psa = child.get_policy();
-        total_visited_policy += psa;
+        psa = wt / num_children + (1.0f - wt) * psa;
+        total_visited_policy += (1.0f - wt) * psa;
         auto denom = 1.0 + child.get_visits(VL);
         auto actual_denom = 1.0 + visits;
         auto puct = cfg_puct * psa * (numerator / denom);

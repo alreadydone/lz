@@ -130,6 +130,8 @@ static void parse_commandline(int argc, char *argv[]) {
         ("disable-frac-backup", "Disable fractional backup feature.")
         ("no-vl-in-parentvisits", "No virtual loss in sum of children's visits.")
         ("uct-temp", po::value<float>(), "")
+        ("exponent", po::value<float>(), "")
+        ("uniform-visits", po::value<float>(), "")
         ;
 #ifdef USE_OPENCL
     po::options_description gpu_desc("GPU options");
@@ -238,6 +240,16 @@ static void parse_commandline(int argc, char *argv[]) {
     if (vm.count("uct-temp")) {
         cfg_uct_temp = vm["uct-temp"].as<float>();
     }
+
+    if (vm.count("exponent")) {
+        cfg_exponent = vm["exponent"].as<float>();
+    }
+
+    if (vm.count("uniform-visits")) {
+        cfg_uniform_visits = vm["uniform-visits"].as<float>();
+    }
+
+    cfg_uniform_visits = std::pow(cfg_uniform_visits, cfg_exponent);
 
 #ifdef USE_TUNER
     if (vm.count("puct")) {
